@@ -1,0 +1,22 @@
+version: '3.8'
+services:
+  backend:
+    build: ./backend
+    ports:
+      - '8000:8000'
+    environment:
+      - JWT_SECRET_KEY=orthofinix-summit-change-me
+      - PORT=8000
+    volumes:
+      - ./backend/uploads:/app/uploads
+      - ./backend/orthofinix_summit.db:/app/orthofinix_summit.db
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    ports:
+      - '5173:80'
+    environment:
+      - VITE_API_URL=http://backend:8000
+    depends_on:
+      - backend

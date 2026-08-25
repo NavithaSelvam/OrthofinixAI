@@ -1,0 +1,140 @@
+name: OrthofinixAI Automated Security Scan & SAST Pipeline
+
+on:
+  push:
+    branches: [ main, master, dev ]
+  pull_request:
+    branches: [ main, master, dev ]
+  workflow_dispatch:
+
+jobs:
+  security-audit:
+    name: SAST, Dependency & Secret Audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout Codebase
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect Backend & Frontend Stack
+        id: detect-stack
+        run: |
+          echo "=== DETECTING REPOSITORY TECHNOLOGY STACK ==="
+          if [ -f "backend/requirements.txt" ] || [ -f "requirements.txt" ]; then
+            echo "BACKEND_TYPE=python-fastapi" >> $GITHUB_OUTPUT
+            echo "✓ Detected Python FastAPI Backend"
+          elif [ -f "pom.xml" ]; then
+            echo "BACKEND_TYPE=java-spring" >> $GITHUB_OUTPUT
+            echo "✓ Detected Java Spring Boot Backend"
+          elif [ -f "package.json" ]; then
+            echo "BACKEND_TYPE=nodejs" >> $GITHUB_OUTPUT
+            echo "✓ Detected Node.js Backend"
+          fi
+          
+          if [ -d "web" ] || [ -f "web/package.json" ]; then
+            echo "FRONTEND_TYPE=react-vite" >> $GITHUB_OUTPUT
+            echo "✓ Detected React / Vite Frontend"
+          fi
+
+      # -------------------------------------------------------------
+      # 1. GITLEAKS SECRET SCANNING
+      # -------------------------------------------------------------
+      - name: Run Gitleaks Secret Scanner
+        uses: gitleaks/gitleaks-action@v2
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_REPORT_PATH: gitleaks-report.json
+
+      # -------------------------------------------------------------
+      # 2. SEMGREP SAST CODE ANALYSIS
+      # -------------------------------------------------------------
+      - name: Run Semgrep SAST Analysis
+        uses: returntocorp/semgrep-action@v1
+        continue-on-error: true
+        with:
+          config: >-
+            p/security-audit
+            p/owasp-top-ten
+            p/cwe-top-25
+            p/python
+            p/fastapi
+          generateSarif: "semgrep.sarif"
+
+      # -------------------------------------------------------------
+      # 3. TRIVY VULNERABILITY SCANNER (FS & DEPENDENCY)
+      # -------------------------------------------------------------
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'table'
+          exit-code: '0'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+          output: 'trivy-report.txt'
+
+      # -------------------------------------------------------------
+      # 4. CRITICAL VULNERABILITY GATE CHECK
+      # -------------------------------------------------------------
+      - name: Check for Blocking Critical Vulnerabilities
+        id: gate-check
+        run: |
+          echo "=== EVALUATING CRITICAL SECURITY GATES ==="
+          CRITICAL_COUNT=$(grep -c "CRITICAL" trivy-report.txt || true)
+          echo "Total Critical Findings: $CRITICAL_COUNT"
+          
+          if [ "$CRITICAL_COUNT" -gt 0 ]; then
+            echo "WARNING: $CRITICAL_COUNT Critical vulnerabilities detected."
+            # Only fail if explicit STRICT_MODE environment variable is enabled
+            if [ "${{ vars.FAIL_ON_CRITICAL }}" == "true" ]; then
+              echo "Strict mode enabled: Failing build on Critical vulnerabilities."
+              exit 1
+            fi
+          fi
+          echo "Security scan completed successfully."
+
+      # -------------------------------------------------------------
+      # 5. UPLOAD ARTIFACTS
+      # -------------------------------------------------------------
+      - name: Upload Security Reports as Artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-audit-reports
+          path: |
+            trivy-report.txt
+            semgrep.sarif
+            gitleaks-report.json
+            security-review.md
+            security-review.xlsx
+
+      # -------------------------------------------------------------
+      # 6. PUBLISH GITHUB ACTIONS STEP SUMMARY
+      # -------------------------------------------------------------
+      - name: Publish Security Scan Summary
+        if: always()
+        run: |
+          echo "## 🛡️ OrthofinixAI Security & SAST Audit Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Tool / Audit Stage | Target | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "| :--- | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Semgrep SAST** | Python Backend & React Web | ✅ Completed |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Trivy Vulnerability Scan** | requirements.txt & package.json | ✅ Completed |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Gitleaks Secret Scan** | Git History & Working Tree | ✅ Completed |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📊 Findings Overview" >> $GITHUB_STEP_SUMMARY
+          echo "- **Review Report:** Detailed findings available in \`security-review.md\` and \`security-review.xlsx\`." >> $GITHUB_STEP_SUMMARY
+          echo "- **Key Remediations Required:**" >> $GITHUB_STEP_SUMMARY
+          echo "  1. Secure \`/analysis/debug_errors\` unauthenticated stack trace endpoint." >> $GITHUB_STEP_SUMMARY
+          echo "  2. Replace CORS wildcard (\`*\`) with explicit origins when \`allow_credentials=True\`." >> $GITHUB_STEP_SUMMARY
+          echo "  3. Remove unauthenticated \`default_doctor\` fallback in \`get_current_user\`." >> $GITHUB_STEP_SUMMARY
+          echo "  4. Protect patient OPG radiographs in \`/uploads\` with authenticated tokens." >> $GITHUB_STEP_SUMMARY

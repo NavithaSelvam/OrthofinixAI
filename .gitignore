@@ -22,3 +22,9 @@ node_modules/
 dist/
 venv/
 __pycache__/
+firebase_service_account.json
+web/.env
+uploads/
+google-services.json
+*.keystore
+*.jks
