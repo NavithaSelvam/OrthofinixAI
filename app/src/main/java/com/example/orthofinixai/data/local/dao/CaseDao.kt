@@ -36,6 +36,15 @@ interface CaseDao {
     @Query("DELETE FROM cases WHERE patientName = :name OR LOWER(patientName) = LOWER(:name)")
     suspend fun deleteCaseByName(name: String)
 
+    @Query("DELETE FROM cases WHERE userId != :userId")
+    suspend fun deleteCasesNotForUser(userId: String)
+
+    @Query("DELETE FROM cases WHERE userId = :userId AND id NOT IN (:validIds)")
+    suspend fun deleteCasesNotInList(userId: String, validIds: List<String>)
+
+    @Query("DELETE FROM cases")
+    suspend fun deleteAllCases()
+
     @Query("SELECT * FROM cases WHERE userId = :userId AND (patientName LIKE '%' || :q || '%' OR id LIKE '%' || :q || '%') ORDER BY createdAt DESC")
     fun searchCases(userId: String, q: String): Flow<List<CaseEntity>>
 }

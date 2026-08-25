@@ -2,6 +2,7 @@ package com.example.orthofinixai.data
 
 import android.content.Context
 import com.example.orthofinixai.data.model.User
+import kotlinx.coroutines.launch
 
 object SessionManager {
     private const val PREFS = "orthofinix_session"
@@ -37,11 +38,28 @@ object SessionManager {
             .putString(KEY_EMAIL, user.email)
             .putString(KEY_NAME, user.displayName ?: "Doctor")
             .apply()
+
+        // Clean stale local records that do not belong to this user
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            try {
+                val db = com.example.orthofinixai.data.local.OrthofinixDatabase.getInstance(context)
+                db.caseDao().deleteCasesNotForUser(user.uid)
+            } catch (_: Exception) {}
+        }
     }
 
     fun onLogout(context: Context) {
+        val oldUid = currentUserId
         currentUserId = null
         currentUser = null
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply()
+
+        // Purge local database on logout for security & privacy
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            try {
+                val db = com.example.orthofinixai.data.local.OrthofinixDatabase.getInstance(context)
+                db.caseDao().deleteAllCases()
+            } catch (_: Exception) {}
+        }
     }
 }

@@ -39,7 +39,20 @@ export default function DashboardPage() {
     const uid = user?.id || (user as any)?.uid;
     const userEmail = user?.email || (user as any)?.email;
 
-    // 1. Direct Firestore Instant Load (Primary Single Source of Truth)
+    // 1. Authoritative Backend API History first
+    try {
+      const { data } = await analysisApi.history();
+      if (data && Array.isArray(data)) {
+        const validCases = data.filter((item) => item && item.id && !isCaseDeletedLocally(item.id));
+        setRecentCases(validCases);
+        setLoading(false);
+        return;
+      }
+    } catch (err) {
+      console.warn('Backend history fetch notice:', err);
+    }
+
+    // 2. Fallback to Firestore cache if backend is unreachable
     if (uid) {
       try {
         const firestoreCases = await fetchUserCasesFromFirestore(uid);
@@ -61,32 +74,13 @@ export default function DashboardPage() {
           });
           const initialCases = Array.from(mergedMap.values()).filter(c => !isCaseDeletedLocally(c.id));
           setRecentCases(initialCases);
-          setLoading(false);
         }
       } catch (err) {
-        console.warn('Firestore initial fetch notice:', err);
+        console.warn('Firestore fallback fetch notice:', err);
+      } finally {
+        setLoading(false);
       }
-    }
-
-    // 2. Background merge with FastAPI backend if available
-    try {
-      const { data } = await analysisApi.history();
-      if (data && Array.isArray(data)) {
-        let hasNew = false;
-        data.forEach(item => {
-          if (item && item.id && !isCaseDeletedLocally(item.id) && !mergedMap.has(item.id)) {
-            mergedMap.set(item.id, item);
-            hasNew = true;
-          }
-        });
-        if (hasNew) {
-          const filtered = Array.from(mergedMap.values()).filter(c => !isCaseDeletedLocally(c.id));
-          setRecentCases(filtered);
-        }
-      }
-    } catch (err) {
-      console.warn('Backend history background merge notice:', err);
-    } finally {
+    } else {
       setLoading(false);
     }
   };
@@ -139,22 +133,7 @@ export default function DashboardPage() {
       });
     };
 
-    // 1. Direct root collection listener (no composite indexes required)
-    try {
-      const unsubRoot = onSnapshot(
-        collection(db, 'cases'),
-        (snapshot) => {
-          console.log("WEB FIRESTORE: Received", snapshot.docs.length, "cases from root collection");
-          handleSnapshotChange(snapshot);
-        },
-        (error) => {
-          console.error("WEB FIRESTORE ERROR:", error.code, error.message);
-        }
-      );
-      unsubs.push(unsubRoot);
-    } catch (e) {
-      console.warn("Failed to subscribe to root cases:", e);
-    }
+
 
     // 2. User subcollection listener
     if (uid && uid !== 'anonymous') {

@@ -23,8 +23,13 @@ dist/
 venv/
 __pycache__/
 firebase_service_account.json
+backend/firebase_service_account.json
+backend/firebase-adminsdk.json
+firebase-adminsdk.json
 web/.env
 uploads/
+backend/uploads/
 google-services.json
 *.keystore
 *.jks
+*.xlsx

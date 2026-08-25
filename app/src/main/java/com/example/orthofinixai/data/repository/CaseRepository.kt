@@ -33,7 +33,9 @@ class CaseRepository(private val context: Context) {
     private val authRepository by lazy { AuthRepository(context) }
 
     private fun userId(): String =
-        SessionManager.currentUserId ?: AuthRepository.getCurrentUserId()
+        com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
+            ?: SessionManager.currentUserId
+            ?: AuthRepository.getCurrentUserId()
 
     fun markCaseAsDeletedLocally(caseId: String) {
         if (caseId.isEmpty()) return
@@ -60,16 +62,11 @@ class CaseRepository(private val context: Context) {
     fun observeCases(): Flow<List<SavedCase>> = kotlinx.coroutines.flow.channelFlow {
         val uid = userId()
         
-        // 1. Observe local Room DB cases and emit reactively
+        // 1. Observe local Room DB cases strictly for the current logged in UID
         val localJob = this@channelFlow.launch(Dispatchers.IO) {
             try {
                 caseDao.getCasesForUser(uid).collect { entities ->
-                    val sourceEntities = if (entities.isEmpty()) {
-                        caseDao.getAllCasesList()
-                    } else {
-                        entities
-                    }
-                    val mapped = sourceEntities
+                    val mapped = entities
                         .filter { 
                             !isCaseDeletedLocally(it.id) && 
                             !isCaseDeletedLocally(it.patientId) && 
@@ -89,14 +86,15 @@ class CaseRepository(private val context: Context) {
             }
         }
         
-        // 2. Fetch remote cases from Backend API & Firestore, sync to Room
+        // 2. Fetch authoritative remote cases from FastAPI Backend API, reconcile to Room
         this@channelFlow.launch(Dispatchers.IO) {
             try {
-                Log.d("AUTH_DEBUG", "Mobile UID: " + com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid)
+                val effectiveUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: uid
+                Log.d("AUTH_DEBUG", "Mobile UID for sync: $effectiveUid")
                 val validRemoteIds = mutableSetOf<String>()
                 var apiSuccess = false
 
-                // A. Authoritative Backend API History first
+                // Authoritative Backend API History
                 try {
                     val token = authRepository.getUserIdToken()
                     if (!token.isNullOrEmpty()) {
@@ -121,7 +119,7 @@ class CaseRepository(private val context: Context) {
 
                                 val caseEntity = CaseEntity(
                                     id = item.id,
-                                    userId = uid,
+                                    userId = effectiveUid,
                                     patientId = item.id,
                                     patientName = item.patientName ?: "Patient",
                                     title = "Assessment Finishing: OPG",
@@ -137,6 +135,18 @@ class CaseRepository(private val context: Context) {
                                     updatedAt = parsedTime
                                 )
                                 caseDao.insertCase(caseEntity)
+
+                                val patientEntity = PatientEntity(
+                                    id = item.id,
+                                    userId = effectiveUid,
+                                    name = item.patientName ?: "Patient",
+                                    age = 25,
+                                    gender = "Unknown",
+                                    phone = "",
+                                    notes = "",
+                                    createdAt = parsedTime
+                                )
+                                patientDao.insertPatient(patientEntity)
                             }
                         }
                     }
@@ -144,210 +154,25 @@ class CaseRepository(private val context: Context) {
                     Log.w(TAG, "Notice on API history sync: ${e.message}")
                 }
 
-                // B. Query user's Firestore records across all UID variants
-                val caseDocsMap = mutableMapOf<String, com.google.firebase.firestore.DocumentSnapshot>()
-
-                if (uid.isNotEmpty() && uid != "anonymous") {
-                    // Query user subcollection
-                    try {
-                        val userSnap = firestore.collection("users").document(uid).collection("cases").get().await()
-                        userSnap.documents.forEach { doc ->
-                            caseDocsMap[doc.id] = doc
-                            validRemoteIds.add(doc.id)
-                        }
-                    } catch (_: Exception) {}
-
-                    // Query root 'cases' where doctor_id == uid
-                    try {
-                        val docSnap = firestore.collection("cases").whereEqualTo("doctor_id", uid).get().await()
-                        docSnap.documents.forEach { doc ->
-                            if (!caseDocsMap.containsKey(doc.id)) {
-                                caseDocsMap[doc.id] = doc
-                                validRemoteIds.add(doc.id)
-                            }
-                        }
-                    } catch (_: Exception) {}
-
-                    // Query root 'cases' where doctorId == uid
-                    try {
-                        val docIdSnap = firestore.collection("cases").whereEqualTo("doctorId", uid).get().await()
-                        docIdSnap.documents.forEach { doc ->
-                            if (!caseDocsMap.containsKey(doc.id)) {
-                                caseDocsMap[doc.id] = doc
-                                validRemoteIds.add(doc.id)
-                            }
-                        }
-                    } catch (_: Exception) {}
-
-                    // Query root 'cases' where user_id == uid
-                    try {
-                        val userColSnap = firestore.collection("cases").whereEqualTo("user_id", uid).get().await()
-                        userColSnap.documents.forEach { doc ->
-                            if (!caseDocsMap.containsKey(doc.id)) {
-                                caseDocsMap[doc.id] = doc
-                                validRemoteIds.add(doc.id)
-                            }
-                        }
-                    } catch (_: Exception) {}
-
-                    val userEmail = authRepository.getCurrentUserEmail()
-                    if (userEmail.isNotEmpty()) {
-                        try {
-                            val emailSnap = firestore.collection("cases").whereEqualTo("doctor_email", userEmail).get().await()
-                            emailSnap.documents.forEach { doc ->
-                                if (!caseDocsMap.containsKey(doc.id)) {
-                                    caseDocsMap[doc.id] = doc
-                                    validRemoteIds.add(doc.id)
-                                }
-                            }
-                        } catch (_: Exception) {}
-                    }
-
-                    // Query root 'analysis_reports' and 'analyses'
-                    for (collName in listOf("analysis_reports", "analyses")) {
-                        try {
-                            val colSnap = firestore.collection(collName).whereEqualTo("doctor_id", uid).get().await()
-                            colSnap.documents.forEach { doc ->
-                                if (!caseDocsMap.containsKey(doc.id)) {
-                                    caseDocsMap[doc.id] = doc
-                                    validRemoteIds.add(doc.id)
-                                }
-                            }
-                        } catch (_: Exception) {}
-                        try {
-                            val colSnap = firestore.collection(collName).whereEqualTo("user_id", uid).get().await()
-                            colSnap.documents.forEach { doc ->
-                                if (!caseDocsMap.containsKey(doc.id)) {
-                                    caseDocsMap[doc.id] = doc
-                                    validRemoteIds.add(doc.id)
-                                }
-                            }
-                        } catch (_: Exception) {}
-                    }
-                }
-
-                // Parse and persist remote cases to Room DB
-                caseDocsMap.values.forEach { doc ->
-                    val rc = SavedCase.fromFirestoreDoc(doc)
-                    if (!isCaseDeletedLocally(rc.id) && !isCaseDeletedLocally(rc.patientName)) {
-                        val caseEntity = CaseEntity(
-                            id = rc.id,
-                            userId = uid,
-                            patientId = rc.patientId,
-                            patientName = rc.patientName,
-                            title = "Assessment Finishing: ${rc.viewType.uppercase()}",
-                            viewType = rc.viewType,
-                            imagePath = rc.imagePath,
-                            reportJson = rc.clinicalDataJson,
-                            reportId = rc.id,
-                            confidenceScore = rc.confidenceScore,
-                            aboScore = rc.aboScore,
-                            andrewsScore = rc.andrewsScore,
-                            status = "Analyzed",
-                            createdAt = rc.createdAt,
-                            updatedAt = rc.createdAt
-                        )
-                        caseDao.insertCase(caseEntity)
-                        
-                        val patientEntity = PatientEntity(
-                            id = rc.patientId,
-                            userId = uid,
-                            name = rc.patientName,
-                            age = 25,
-                            gender = "Unknown",
-                            phone = "",
-                            notes = "",
-                            createdAt = rc.createdAt
-                        )
-                        patientDao.insertPatient(patientEntity)
-                    }
-                }
-
-                // Reconcile local Room DB: Clean table sync removing stale cases deleted remotely
-                if (uid.isNotEmpty() && uid != "anonymous") {
-                    val localList = caseDao.getAllCasesList()
-                    for (localCase in localList) {
-                        if (!validRemoteIds.contains(localCase.id) || isCaseDeletedLocally(localCase.id) || isCaseDeletedLocally(localCase.patientName)) {
-                            caseDao.deleteCase(uid, localCase.id)
-                            caseDao.deleteCaseById(localCase.id)
-                        }
-                    }
+                // Reconcile local Room DB: Clean table sync removing stale cases deleted remotely or from prior users
+                if (apiSuccess && effectiveUid.isNotEmpty() && effectiveUid != "anonymous") {
+                    caseDao.deleteCasesNotInList(effectiveUid, validRemoteIds.toList())
+                    caseDao.deleteCasesNotForUser(effectiveUid)
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.e(TAG, "Error fetching from remote sources", e)
+                Log.e(TAG, "Error fetching from remote API", e)
             }
         }
         
-        // 3. Listen to remote updates reactively for real-time synchronization
+        // 3. Listen to remote updates reactively for real-time synchronization on user's private subcollection
         val listeners = mutableListOf<ListenerRegistration>()
         try {
-            val userEmail = authRepository.getCurrentUserEmail()
-
-            // A. Primary direct listener on root 'cases' collection (No complex composite index required)
-            val rootListener = firestore.collection("cases").addSnapshotListener { snapshot, error ->
-                if (error != null) {
-                    Log.e("FIRESTORE_ERROR", "Cases listen failed with code: ${error.code}", error)
-                    android.os.Handler(android.os.Looper.getMainLooper()).post {
-                        android.widget.Toast.makeText(context, "Sync Notice: ${error.message}", android.widget.Toast.LENGTH_SHORT).show()
-                    }
-                    return@addSnapshotListener
-                }
-
-                if (snapshot != null) {
-                    Log.d("FIRESTORE_DEBUG", "Received ${snapshot.size()} cases from Firestore root")
-                    this@channelFlow.launch(Dispatchers.IO) {
-                        try {
-                            for (change in snapshot.documentChanges) {
-                                val doc = change.document
-                                if (change.type == com.google.firebase.firestore.DocumentChange.Type.REMOVED) {
-                                    caseDao.deleteCaseById(doc.id)
-                                    caseDao.deleteCase(uid, doc.id)
-                                } else {
-                                    val rc = SavedCase.fromFirestoreDoc(doc)
-                                    val docUid = doc.getString("user_id") ?: doc.getString("doctor_id") ?: doc.getString("doctorId") ?: rc.doctorId
-                                    val docEmail = doc.getString("email") ?: doc.getString("doctor_email") ?: ""
-                                    
-                                    // Client-side isolation filter
-                                    val matchesUser = uid.isEmpty() || uid == "anonymous" || docUid == uid || 
-                                                      (userEmail.isNotEmpty() && docEmail == userEmail) || docUid.isEmpty()
-                                    
-                                    if (matchesUser && !isCaseDeletedLocally(rc.id) && !isCaseDeletedLocally(rc.patientName)) {
-                                        val caseEntity = CaseEntity(
-                                            id = rc.id,
-                                            userId = if (docUid.isNotEmpty()) docUid else uid,
-                                            patientId = rc.patientId,
-                                            patientName = rc.patientName,
-                                            title = "Assessment Finishing: ${rc.viewType.uppercase()}",
-                                            viewType = rc.viewType,
-                                            imagePath = rc.imagePath,
-                                            reportJson = rc.clinicalDataJson,
-                                            reportId = rc.id,
-                                            confidenceScore = rc.confidenceScore,
-                                            aboScore = rc.aboScore,
-                                            andrewsScore = rc.andrewsScore,
-                                            status = "Analyzed",
-                                            createdAt = rc.createdAt,
-                                            updatedAt = rc.createdAt
-                                        )
-                                        caseDao.insertCase(caseEntity)
-                                    }
-                                }
-                            }
-                        } catch (ex: Exception) {
-                            Log.w(TAG, "Sync error in root cases listener: ${ex.message}")
-                        }
-                    }
-                }
-            }
-            listeners.add(rootListener)
-
-            // B. User private subcollection listener
             if (uid.isNotEmpty() && uid != "anonymous") {
                 val userListener = firestore.collection("users").document(uid).collection("cases").addSnapshotListener { snapshot, error ->
                     if (error != null) {
-                        Log.e("FIRESTORE_ERROR", "User subcollection listen failed: ${error.code}", error)
+                        Log.w("FIRESTORE_DEBUG", "User subcollection listen notice: ${error.code}")
                         return@addSnapshotListener
                     }
                     if (snapshot != null) {

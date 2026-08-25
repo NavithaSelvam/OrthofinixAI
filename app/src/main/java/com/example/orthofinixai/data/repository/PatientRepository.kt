@@ -31,14 +31,13 @@ class PatientRepository(private val context: Context) {
     private val authRepository by lazy { AuthRepository(context) }
 
     fun getPatients(): Flow<Result<List<Patient>>> = channelFlow {
-        val userId = AuthRepository.getCurrentUserId()
+        val userId = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: AuthRepository.getCurrentUserId()
         
         // 1. Observe local Room DB
         val localJob = launch(Dispatchers.IO) {
             try {
                 patientDao.getPatientsForUser(userId).collect { entities ->
-                    val sourceEntities = if (entities.isEmpty()) patientDao.getAllPatientsList() else entities
-                    val mapped = sourceEntities.map { it.toPatient() }
+                    val mapped = entities.map { it.toPatient() }
                     send(Result.success(mapped))
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -48,142 +47,33 @@ class PatientRepository(private val context: Context) {
             }
         }
 
-        // 2. Fetch remote patients from Backend API & Firestore
+        // 2. Fetch remote patients from FastAPI Backend API
         launch(Dispatchers.IO) {
             try {
-                // A. Try Backend API
-                try {
-                    val token = authRepository.getUserIdToken()
-                    if (!token.isNullOrEmpty()) {
-                        val api = OrthofinixApi.create()
-                        val apiPatients = api.getPatients("Bearer $token")
-                        apiPatients.forEach { bp ->
-                            val entity = PatientEntity(
-                                id = bp.id,
-                                userId = bp.doctorId ?: userId,
-                                name = bp.name,
-                                age = estimateAge(bp.dateOfBirth ?: ""),
-                                gender = bp.gender ?: "Unknown",
-                                phone = bp.contactInfo ?: "",
-                                notes = "",
-                                createdAt = System.currentTimeMillis()
-                            )
-                            patientDao.insertPatient(entity)
-                        }
+                val token = authRepository.getUserIdToken()
+                if (!token.isNullOrEmpty()) {
+                    val api = OrthofinixApi.create()
+                    val apiPatients = api.getPatients("Bearer $token")
+                    apiPatients.forEach { bp ->
+                        val entity = PatientEntity(
+                            id = bp.id,
+                            userId = bp.doctorId ?: userId,
+                            name = bp.name,
+                            age = estimateAge(bp.dateOfBirth ?: ""),
+                            gender = bp.gender ?: "Unknown",
+                            phone = bp.contactInfo ?: "",
+                            notes = "",
+                            createdAt = System.currentTimeMillis()
+                        )
+                        patientDao.insertPatient(entity)
                     }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Notice fetching patients from API: ${e.message}")
-                }
-
-                // B. Fetch Firestore 'patients' collection for current user
-                try {
-                    if (userId.isNotEmpty() && userId != "anonymous") {
-                        val fetchedDocs = mutableMapOf<String, com.google.firebase.firestore.DocumentSnapshot>()
-                        for (field in listOf("doctor_id", "doctorId")) {
-                            try {
-                                val snap = firestore.collection("patients").whereEqualTo(field, userId).get().await()
-                                snap.documents.forEach { doc ->
-                                    if (!fetchedDocs.containsKey(doc.id)) {
-                                        fetchedDocs[doc.id] = doc
-                                    }
-                                }
-                            } catch (_: Exception) {}
-                        }
-                        fetchedDocs.values.forEach { doc ->
-                            val pId = doc.id
-                            val name = doc.getString("name") 
-                                ?: doc.getString("patient_name") 
-                                ?: doc.getString("patientName") 
-                                ?: "Unknown Patient"
-                            val dob = doc.getString("date_of_birth") 
-                                ?: doc.getString("dateOfBirth") 
-                                ?: doc.getString("dob") 
-                                ?: ""
-                            val gender = doc.getString("gender") ?: "Unknown"
-                            val phone = doc.getString("phone") ?: doc.getString("contact_info") ?: ""
-                            val notes = doc.getString("notes") ?: ""
-                            val docUid = doc.getString("doctor_id") ?: doc.getString("doctorId") ?: userId
-
-                            val entity = PatientEntity(
-                                id = pId,
-                                userId = docUid,
-                                name = name,
-                                age = estimateAge(dob),
-                                gender = gender,
-                                phone = phone,
-                                notes = notes,
-                                createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis()
-                            )
-                            patientDao.insertPatient(entity)
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Notice fetching Firestore patients: ${e.message}")
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Error in remote patients fetch", e)
+                Log.w(TAG, "Notice fetching patients from API: ${e.message}")
             }
         }
-
-        // 3. Real-time Firestore direct snapshot listener on root 'patients' collection
-        val listeners = mutableListOf<ListenerRegistration>()
-        try {
-            val userEmail = authRepository.getCurrentUserEmail()
-            val handlePatientSnapshot = com.google.firebase.firestore.EventListener<com.google.firebase.firestore.QuerySnapshot> { snapshot, error ->
-                if (error != null) {
-                    Log.e("FIRESTORE_ERROR", "Patients listen failed with code: ${error.code}", error)
-                } else if (snapshot != null) {
-                    Log.d("FIRESTORE_DEBUG", "Received ${snapshot.size()} patients from Firestore root")
-                    launch(Dispatchers.IO) {
-                        try {
-                            for (change in snapshot.documentChanges) {
-                                val doc = change.document
-                                if (change.type == com.google.firebase.firestore.DocumentChange.Type.REMOVED) {
-                                    patientDao.deletePatientById(doc.id)
-                                } else {
-                                    val pId = doc.id
-                                    val name = doc.getString("name") ?: doc.getString("patient_name") ?: doc.getString("patientName") ?: "Patient"
-                                    val dob = doc.getString("date_of_birth") ?: doc.getString("dateOfBirth") ?: doc.getString("dob") ?: ""
-                                    val gender = doc.getString("gender") ?: "Unknown"
-                                    val phone = doc.getString("phone") ?: ""
-                                    val notes = doc.getString("notes") ?: ""
-                                    val docUid = doc.getString("doctor_id") ?: doc.getString("doctorId") ?: doc.getString("user_id") ?: ""
-                                    val docEmail = doc.getString("email") ?: doc.getString("doctor_email") ?: ""
-
-                                    val matches = userId.isEmpty() || userId == "anonymous" || docUid == userId || 
-                                                  (userEmail.isNotEmpty() && docEmail == userEmail) || docUid.isEmpty()
-
-                                    if (matches) {
-                                        val entity = PatientEntity(
-                                            id = pId,
-                                            userId = if (docUid.isNotEmpty()) docUid else userId,
-                                            name = name,
-                                            age = estimateAge(dob),
-                                            gender = gender,
-                                            phone = phone,
-                                            notes = notes,
-                                            createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis()
-                                        )
-                                        patientDao.insertPatient(entity)
-                                    }
-                                }
-                            }
-                        } catch (ex: Exception) {
-                            Log.w(TAG, "Error in patient snapshot sync: ${ex.message}")
-                        }
-                    }
-                }
-            }
-
-            val rootPatListener = firestore.collection("patients").addSnapshotListener(handlePatientSnapshot)
-            listeners.add(rootPatListener)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to register patients listener", e)
-        }
-
         awaitClose {
             localJob.cancel()
-            listeners.forEach { it.remove() }
         }
     }.flowOn(Dispatchers.IO)
 
