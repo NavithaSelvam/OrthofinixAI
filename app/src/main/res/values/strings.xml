@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">OrthofinixAI</string>
+    <string name="splash_tagline">Finish. Verified. Perfected.</string>
+    <string name="default_web_client_id" translatable="false"></string>
+</resources>

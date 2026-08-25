@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1095608848739",
+    "project_id": "orthofinixai",
+    "storage_bucket": "orthofinixai.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1095608848739:android:1cc4e50e2de99e53778356",
+        "android_client_info": {
+          "package_name": "com.example.orthofinixai"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCxuGJI0BFylFMX6g3EvdPs9lK_6odFBOA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -1,0 +1,17 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="200dp"
+    android:height="200dp"
+    android:viewportWidth="100"
+    android:viewportHeight="100">
+    <!-- Blue part of the O -->
+    <path
+        android:fillColor="#005696"
+        android:pathData="M50,15 A35,35 0 1,0 15,50 A35,35 0 0,0 50,85 A35,35 0 0,0 60,84 L60,74 A25,25 0 1,1 50,25 A25,25 0 0,1 25,50 A25,25 0 0,1 50,75 L50,85 Z" />
+    <!-- Green part of the O and Checkmark -->
+    <path
+        android:fillColor="#73AF43"
+        android:pathData="M50,15 A35,35 0 0,1 85,50 A35,35 0 0,1 75,70 L65,65 A25,25 0 0,0 75,50 A25,25 0 0,0 50,25 Z" />
+    <path
+        android:fillColor="#73AF43"
+        android:pathData="M40,50 L50,60 L80,30 L87,37 L50,74 L33,57 Z" />
+</vector>
