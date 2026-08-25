@@ -229,7 +229,8 @@ class AuthRepository(private val context: Context) {
         fun initialize(context: Context) {
             appContext = context.applicationContext
             SessionManager.restore(context.applicationContext)
-            FirebaseAuth.getInstance().currentUser?.let { firebaseUser ->
+            val auth = FirebaseAuth.getInstance()
+            auth.currentUser?.let { firebaseUser ->
                 SessionManager.onLogin(
                     User(
                         uid = firebaseUser.uid,
@@ -239,11 +240,24 @@ class AuthRepository(private val context: Context) {
                     context.applicationContext
                 )
             }
+            auth.addAuthStateListener { fbAuth ->
+                val user = fbAuth.currentUser
+                if (user != null) {
+                    SessionManager.onLogin(
+                        User(
+                            uid = user.uid,
+                            email = user.email ?: "",
+                            displayName = user.displayName ?: "Doctor"
+                        ),
+                        context.applicationContext
+                    )
+                }
+            }
         }
 
         fun getCurrentUserId(): String {
-            return SessionManager.currentUserId
-                ?: FirebaseAuth.getInstance().currentUser?.uid
+            return FirebaseAuth.getInstance().currentUser?.uid
+                ?: SessionManager.currentUserId
                 ?: "anonymous"
         }
 

@@ -110,9 +110,9 @@ export async function saveCaseToFirestore(
   patientDetails?: { dob?: string; gender?: string; notes?: string; patientId?: string }
 ): Promise<void> {
   try {
-    const uid = user?.id || (report as any).user_id || 'anonymous_doctor';
-    const email = user?.email || (report as any).doctor_email || '';
-    const name = user?.display_name || (report as any).doctor_name || 'Doctor';
+    const uid = firebaseAuth.currentUser?.uid || user?.id || (user as any)?.uid || (report as any).user_id || 'anonymous_doctor';
+    const email = firebaseAuth.currentUser?.email || user?.email || (report as any).doctor_email || '';
+    const name = firebaseAuth.currentUser?.displayName || user?.display_name || (report as any).doctor_name || 'Doctor';
     const caseId = report.id || `case_${Date.now()}`;
     const now = new Date();
     const nowIso = now.toISOString();
