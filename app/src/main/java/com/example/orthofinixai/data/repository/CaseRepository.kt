@@ -53,7 +53,7 @@ class CaseRepository(private val context: Context) {
         return try {
             val prefs = context.getSharedPreferences("orthofinix_deletions", Context.MODE_PRIVATE)
             val set = prefs.getStringSet("deleted_cases", emptySet()) ?: emptySet()
-            set.contains(caseId) || set.contains(caseId.lowercase().trim())
+            set.contains(caseId)
         } catch (_: Exception) {
             false
         }
@@ -67,11 +67,7 @@ class CaseRepository(private val context: Context) {
             try {
                 caseDao.getCasesForUser(uid).collect { entities ->
                     val mapped = entities
-                        .filter { 
-                            !isCaseDeletedLocally(it.id) && 
-                            !isCaseDeletedLocally(it.patientId) && 
-                            !isCaseDeletedLocally(it.patientName)
-                        }
+                        .filter { !isCaseDeletedLocally(it.id) }
                         .map { entity ->
                             val patientEntity = patientDao.getPatient(uid, entity.patientId) 
                                 ?: patientDao.getPatientById(entity.patientId)
@@ -102,7 +98,7 @@ class CaseRepository(private val context: Context) {
                         val apiCases = api.getHistory("Bearer $token")
                         apiSuccess = true
                         apiCases.forEach { item ->
-                            if (!isCaseDeletedLocally(item.id) && !isCaseDeletedLocally(item.patientName ?: "")) {
+                            if (!isCaseDeletedLocally(item.id)) {
                                 val score = item.finishingScore ?: 0f
                                 validRemoteIds.add(item.id)
 

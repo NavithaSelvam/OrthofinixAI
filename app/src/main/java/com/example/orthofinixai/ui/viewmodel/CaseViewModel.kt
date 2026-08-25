@@ -43,7 +43,7 @@ class CaseViewModel(application: Application) : AndroidViewModel(application) {
             val current = _uiState.value
             if (current is CaseListState.Success) {
                 _uiState.value = CaseListState.Success(
-                    current.cases.filter { it.id != caseId && it.patientId != caseId && it.patientName != caseId }
+                    current.cases.filter { it.id != caseId }
                 )
             }
             repository.deleteCase(caseId)
