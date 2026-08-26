@@ -83,39 +83,34 @@ data class SavedCase(
                     } catch (_: Exception) { "" }
                 }
                 
-            val oScore = (doc.getDouble("overall_score")
-                ?: doc.getDouble("overallScore")
-                ?: doc.getDouble("overall_finishing_score") 
-                ?: doc.getDouble("finishing_score") 
-                ?: doc.getDouble("overallFinishingScore")
-                ?: doc.getDouble("finishingScore")
-                ?: 0.0).toInt()
+            fun getDoubleValue(vararg keys: String): Double? {
+                for (k in keys) {
+                    val v = doc.get(k)
+                    if (v is Number) return v.toDouble()
+                    if (v is String) {
+                        val parsed = v.toDoubleOrNull()
+                        if (parsed != null) return parsed
+                    }
+                }
+                return null
+            }
+
+            val oScore = (getDoubleValue("overall_score", "overallScore", "overall_finishing_score", "finishing_score", "overallFinishingScore", "finishingScore") ?: 0.0).toInt()
                 
-            val aScore = (doc.getDouble("abo_score") 
-                ?: doc.getDouble("aboScore") 
-                ?: oScore.toDouble()).toInt()
+            val aScore = (getDoubleValue("abo_score", "aboScore") ?: oScore.toDouble()).toInt()
                 
-            val andScore = (doc.getDouble("andrews_score") 
-                ?: doc.getDouble("andrewsScore") 
-                ?: oScore.toDouble()).toInt()
+            val andScore = (getDoubleValue("andrews_score", "andrewsScore") ?: oScore.toDouble()).toInt()
                 
-            val alignScore = (doc.getDouble("alignment_score")
-                ?: doc.getDouble("alignmentScore") 
-                ?: doc.getDouble("arch_symmetry_score") 
-                ?: oScore.toDouble()).toInt()
+            val alignScore = (getDoubleValue("alignment_score", "alignmentScore", "arch_symmetry_score") ?: oScore.toDouble()).toInt()
                 
-            val rootScore = (doc.getDouble("root_angulation_score") 
-                ?: doc.getDouble("rootAngulationScore") 
-                ?: oScore.toDouble()).toInt()
+            val rootScore = (getDoubleValue("root_angulation_score", "rootAngulationScore") ?: oScore.toDouble()).toInt()
                 
-            val rawConf = doc.getDouble("confidence_score") 
-                ?: doc.getDouble("confidenceScore") 
-                ?: 95.0
+            val rawConf = getDoubleValue("confidence_score", "confidenceScore", "confidence") ?: 95.0
             val confScore = if (rawConf <= 1.0) (rawConf * 100).toInt() else rawConf.toInt()
 
             val stat = doc.getString("status") ?: "ANALYZED"
 
-            var timeMs = doc.getLong("createdAt") ?: 0L
+            var timeMs = (doc.get("createdAt") as? Number)?.toLong() ?: 0L
             if (timeMs == 0L) {
                 val timestampObj = doc.getTimestamp("timestamp") ?: doc.getTimestamp("created_at")
                 if (timestampObj != null) {

@@ -701,6 +701,9 @@ class CaseRepository(private val context: Context) {
                     if (cl != null) return cl
                 }
                 val sc = SavedCase.fromFirestoreDoc(doc)
+                val overjetVal = (doc.get("overjet_mm") as? Number)?.toFloat() ?: (doc.getString("overjet_mm")?.toFloatOrNull() ?: 2.4f)
+                val overbiteVal = (doc.get("overbite_percent") as? Number)?.toFloat() ?: (doc.getString("overbite_percent")?.toFloatOrNull() ?: 25.0f)
+                val midlineVal = (doc.get("midline_deviation_mm") as? Number)?.toFloat() ?: (doc.getString("midline_deviation_mm")?.toFloatOrNull() ?: 0.0f)
                 return ClinicalReport(
                     viewType = sc.viewType,
                     overallScore = sc.overallScore.toFloat(),
@@ -710,9 +713,9 @@ class CaseRepository(private val context: Context) {
                     alignmentScore = sc.alignmentScore.toFloat(),
                     rootAngulationScore = sc.rootAngulationScore.toFloat(),
                     andrewsScore = sc.andrewsScore.toFloat(),
-                    overjetMm = (doc.getDouble("overjet_mm") ?: 2.4).toFloat(),
-                    overbitePercent = (doc.getDouble("overbite_percent") ?: 25.0).toFloat(),
-                    midlineDiscrepancyMm = (doc.getDouble("midline_deviation_mm") ?: 0.0).toFloat(),
+                    overjetMm = overjetVal,
+                    overbitePercent = overbiteVal,
+                    midlineDiscrepancyMm = midlineVal,
                     recommendations = (doc.get("recommendations") as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList()
                 )
             }
