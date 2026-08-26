@@ -326,10 +326,12 @@ class CaseRepository(private val context: Context) {
                 if (!token.isNullOrEmpty()) {
                     val api = OrthofinixApi.create()
                     val apiCases = api.getHistory("Bearer $token")
+                    val caseIds = apiCases.map { it.id }
+                    Log.i("ORTHOFINIX_STAGE", "[ANDROID HISTORY]\nUID: $effectiveUid\nnumber of cases returned: ${apiCases.size}\ncase IDs returned: $caseIds")
                     apiCases.forEach { item ->
-                        if (!isCaseDeletedLocally(item.id) && !validRemoteIds.contains(item.id)) {
+                        if (!validRemoteIds.contains(item.id)) {
                             validRemoteIds.add(item.id)
-                            val score = item.finishingScore ?: 0f
+                            val score = item.finishingScore ?: (item.overallScore ?: 0f)
                             var parsedTime = System.currentTimeMillis()
                             val createdStr = item.createdAt
                             if (!createdStr.isNullOrEmpty()) {
@@ -662,6 +664,7 @@ class CaseRepository(private val context: Context) {
                 if (!token.isNullOrEmpty()) {
                     val api = OrthofinixApi.create()
                     val resp = api.getReport("Bearer $token", caseId)
+                    Log.i("ORTHOFINIX_STAGE", "[ANDROID REPORT]\nUID: $uid\ncase ID: $caseId\nHTTP response: 200 OK")
                     val reportJson = resp.metrics?.let { com.google.gson.Gson().toJson(it) } ?: ""
                     val clinical = ClinicalReport(
                         viewType = resp.view_type,

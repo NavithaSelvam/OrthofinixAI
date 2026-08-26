@@ -74,6 +74,9 @@ class AnalysisRepository(private val context: Context) {
     """.trimIndent()
         )
 
+        val currentFbUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: "anonymous"
+        Log.i("ORTHOFINIX_STAGE", "[ANDROID AUTH]\nFirebase UID: $currentFbUid\ntoken present: ${if (token != null) "YES" else "NO"}")
+
         if (token.isNullOrEmpty()) {
             emit(AnalysisProgress.Failed("Authentication failed. Please log out and sign in again."))
             return@flow
@@ -84,7 +87,7 @@ class AnalysisRepository(private val context: Context) {
         Log.d(TAG, "Backend URL configuration: ${com.example.orthofinixai.data.api.ApiConfig.BASE_URL}")
 
         emit(AnalysisProgress.Step(0.1f, "Uploading image to secure server..."))
-        Log.d(TAG, "Uploading image started. Auth header: ${authHeader.take(20)}...")
+        Log.i("ORTHOFINIX_STAGE", "[ANDROID UPLOAD]\nUID: $currentFbUid\npatient ID: $caseId\nuploading...")
 
         // Step 3: upload image
         var uploadResponse: com.example.orthofinixai.data.api.UploadResponse? = null
@@ -97,8 +100,7 @@ class AnalysisRepository(private val context: Context) {
             Log.d(TAG, "Upload request: imageBytes size=${imageBytes.size}, authHeader=${authHeader.take(20)}...")
             val api = com.example.orthofinixai.data.api.OrthofinixApi.create()
             val response = api.uploadImage(authHeader, part)
-            Log.d(TAG, "Upload API call succeeded. Response: $response")
-            Log.d(TAG, "Upload ID: '${response.upload_id}', Image URL: '${response.image_url}'")
+            Log.i("ORTHOFINIX_STAGE", "[ANDROID UPLOAD]\nUID: $currentFbUid\npatient ID: $caseId\nupload ID: ${response.upload_id}\nHTTP response: 200 OK")
             if (response.upload_id.isNullOrEmpty()) {
                 Log.e(TAG, "Backend returned null or empty upload_id")
                 throw IllegalStateException("Backend returned invalid upload_id")
@@ -136,7 +138,7 @@ class AnalysisRepository(private val context: Context) {
         }
 
         emit(AnalysisProgress.Step(0.5f, "Running robust AI analysis pipeline..."))
-        Log.d(TAG, "Analyze started.")
+        Log.i("ORTHOFINIX_STAGE", "[ANDROID ANALYZE]\nUID: $currentFbUid\nupload ID: ${uploadResponse.upload_id}\npatient ID: $caseId")
 
         if (patientName.isNullOrEmpty()) {
             emit(AnalysisProgress.Failed("Patient name is required. Please try again."))
@@ -162,6 +164,7 @@ class AnalysisRepository(private val context: Context) {
             val dobBody = if (dob.isNotEmpty()) dob.toRequestBody(textMediaType) else null
             val genderBody = if (gender.isNotEmpty()) gender.toRequestBody(textMediaType) else null
             analysisResponse = api.analyzeImage(authHeader, uploadIdBody, patientNameBody, viewTypeBody, caseIdBody, dobBody, genderBody)
+            Log.i("ORTHOFINIX_STAGE", "[ANDROID ANALYZE]\nUID: $currentFbUid\nupload ID: ${uploadResponse.upload_id}\ncase ID: ${analysisResponse.id}\nHTTP response: 200 OK")
         } catch (e: CancellationException) {
             throw e
         } catch (e: retrofit2.HttpException) {

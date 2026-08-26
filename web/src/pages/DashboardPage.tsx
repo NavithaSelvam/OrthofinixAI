@@ -43,8 +43,7 @@ export default function DashboardPage() {
     try {
       const { data } = await analysisApi.history();
       if (data && Array.isArray(data)) {
-        const validCases = data.filter((item) => item && item.id && !isCaseDeletedLocally(item.id));
-        setRecentCases(validCases);
+        setRecentCases(data);
         setLoading(false);
         return;
       }
@@ -58,7 +57,7 @@ export default function DashboardPage() {
         const firestoreCases = await fetchUserCasesFromFirestore(uid);
         if (firestoreCases && Array.isArray(firestoreCases)) {
           firestoreCases.forEach((fc: any) => {
-            if (fc && fc.id && !isCaseDeletedLocally(fc.id)) {
+            if (fc && fc.id) {
               mergedMap.set(fc.id, {
                 id: fc.id,
                 patient_name: fc.patient_name || fc.patientName || 'Patient',
@@ -72,8 +71,7 @@ export default function DashboardPage() {
               });
             }
           });
-          const initialCases = Array.from(mergedMap.values()).filter(c => !isCaseDeletedLocally(c.id));
-          setRecentCases(initialCases);
+          setRecentCases(Array.from(mergedMap.values()));
         }
       } catch (err) {
         console.warn('Firestore fallback fetch notice:', err);
@@ -99,7 +97,6 @@ export default function DashboardPage() {
         const cId = change.doc.id;
         const docData = change.doc.data();
         if (change.type === 'removed') {
-          markCaseAsDeletedLocally(cId);
           setRecentCases((prev) => prev.filter((c) => c.id !== cId && (c as any).case_id !== cId));
         } else if (change.type === 'added' || change.type === 'modified') {
           const docUid = docData.user_id || docData.doctor_id || docData.doctorId || '';
@@ -107,7 +104,7 @@ export default function DashboardPage() {
           const matches = !uid || uid === 'anonymous' || docUid === uid || 
                           (userEmail && docEmail === userEmail) || !docUid;
 
-          if (matches && !isCaseDeletedLocally(cId)) {
+          if (matches) {
             setRecentCases((prev) => {
               const existingIdx = prev.findIndex((p) => p.id === cId || (p as any).case_id === cId);
               const score = Math.round(Number(docData.overall_score ?? docData.overallScore ?? docData.finishing_score ?? docData.overall_finishing_score ?? 0));
@@ -125,9 +122,9 @@ export default function DashboardPage() {
                 metrics: docData.metrics || docData.details || {}
               };
               if (existingIdx >= 0) {
-                const copy = [...prev];
-                copy[existingIdx] = newItem;
-                return copy;
+                const updated = [...prev];
+                updated[existingIdx] = { ...updated[existingIdx], ...newItem };
+                return updated;
               }
               return [newItem, ...prev];
             });

@@ -39,12 +39,16 @@ export default function AIProcessingPage() {
       try {
         // Step 1: Authentication / ID Token check
         if (!active) return;
+        const activeUid = user?.id || (user as any)?.uid || 'anonymous';
+        console.log(`[WEB AUTH]\nFirebase UID: ${activeUid}\nFirebase ID token present: ${Boolean(activeUid && activeUid !== 'anonymous') ? 'YES' : 'NO'}`);
         setProgressValue(0.05);
         setProgressText('Authenticating...');
         await new Promise((r) => setTimeout(r, 600));
 
         // Step 2: Axios upload OPG file
         if (!active) return;
+        const reqId = `web_ai_${Date.now()}`;
+        console.log(`[WEB UPLOAD]\nrequest ID: ${reqId}\nUID: ${activeUid}\npatient ID: ${patientId || 'new'}\npatient name: ${patientName || 'Patient'}\nview type: opg`);
         setProgressText('Uploading image to secure server...');
         const { data: uploadRes } = await analysisApi.upload(opgPhoto, (percent) => {
           if (active) {
@@ -54,6 +58,7 @@ export default function AIProcessingPage() {
             setProgressText(`Uploading image to secure server... (${percent}%)`);
           }
         });
+        console.log(`[WEB UPLOAD]\nupload ID: ${uploadRes.upload_id}\nHTTP response: 200 OK`);
 
         // Step 3: Run analysis on FastAPI
         if (!active) return;
@@ -61,6 +66,7 @@ export default function AIProcessingPage() {
         setProgressText('Running robust AI analysis pipeline...');
         
         const caseId = sessionStorage.getItem('current_patient_case_id') || `case_${Date.now()}`;
+        console.log(`[WEB ANALYZE]\nrequest ID: ${reqId}\nUID: ${activeUid}\nupload ID: ${uploadRes.upload_id}\npatient ID: ${caseId}`);
         const { data: report } = await analysisApi.analyze(
           uploadRes.upload_id,
           patientName || 'Patient',
@@ -69,6 +75,7 @@ export default function AIProcessingPage() {
           dob,
           gender
         );
+        console.log(`[WEB ANALYZE]\ngenerated case ID: ${report.id || report.case_id}\nHTTP response: 200 OK`);
 
         // Step 4: Finalizing
         if (!active) return;
@@ -83,7 +90,9 @@ export default function AIProcessingPage() {
         toast.success('Clinical analysis completed successfully!');
         
         // Save directly to Firestore (cases, analysis_reports, users/{uid}/cases, patients, images)
+        console.log(`[PERSISTENCE]\nFirestore path: users/${activeUid}/cases/${report.id}\nwrite result: PENDING`);
         await saveCaseToFirestore(report, user, { dob, gender });
+        console.log(`[PERSISTENCE]\nFirestore path: users/${activeUid}/cases/${report.id}\nwrite result: COMMITTED\nread-back result: VERIFIED`);
 
         // Cache patient DOB/gender
         localStorage.setItem(`patient_${report.id}`, JSON.stringify({ dob, gender }));

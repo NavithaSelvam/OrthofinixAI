@@ -45,11 +45,12 @@ export default function HistoryPage() {
 
     // 1. Authoritative Backend API History first
     try {
+      console.log('[WEB HISTORY] Fetching authoritative case history from Backend...');
       const res = await analysisApi.history();
       const data = res?.data;
       if (data && Array.isArray(data)) {
-        const validCases = data.filter((item) => item && item.id && !isCaseDeletedLocally(item.id));
-        setItems(validCases);
+        console.log(`[WEB HISTORY] UID: ${uid} -> Received ${data.length} cases from backend:`, data.map(d => d.id));
+        setItems(data);
         setLoading(false);
         setIsRefreshing(false);
         return;
@@ -64,7 +65,7 @@ export default function HistoryPage() {
         const firestoreCases = await fetchUserCasesFromFirestore(uid);
         if (firestoreCases && Array.isArray(firestoreCases)) {
           firestoreCases.forEach((fc: any) => {
-            if (fc && fc.id && !isCaseDeletedLocally(fc.id)) {
+            if (fc && fc.id) {
               mergedMap.set(fc.id, {
                 id: fc.id,
                 patient_name: fc.patient_name || fc.patientName || 'Patient',
@@ -78,8 +79,7 @@ export default function HistoryPage() {
               });
             }
           });
-          const initialCases = Array.from(mergedMap.values()).filter(c => !isCaseDeletedLocally(c.id));
-          setItems(initialCases);
+          setItems(Array.from(mergedMap.values()));
         }
       } catch (fsErr) {
         console.warn('[Firestore History Sync Notice]:', fsErr);
@@ -107,7 +107,6 @@ export default function HistoryPage() {
         const cId = change.doc.id;
         const docData = change.doc.data();
         if (change.type === 'removed') {
-          markCaseAsDeletedLocally(cId);
           setItems((prev) => prev.filter((c) => c.id !== cId && (c as any).case_id !== cId));
         } else if (change.type === 'added' || change.type === 'modified') {
           const docUid = docData.user_id || docData.doctor_id || docData.doctorId || '';
@@ -115,7 +114,7 @@ export default function HistoryPage() {
           const matches = !uid || uid === 'anonymous' || docUid === uid || 
                           (userEmail && docEmail === userEmail) || !docUid;
 
-          if (matches && !isCaseDeletedLocally(cId)) {
+          if (matches) {
             setItems((prev) => {
               const existingIdx = prev.findIndex((p) => p.id === cId || (p as any).case_id === cId);
               const score = Math.round(Number(docData.overall_score ?? docData.overallScore ?? docData.finishing_score ?? docData.overall_finishing_score ?? 0));
@@ -133,9 +132,9 @@ export default function HistoryPage() {
                 metrics: docData.metrics || docData.details || {}
               };
               if (existingIdx >= 0) {
-                const copy = [...prev];
-                copy[existingIdx] = newItem;
-                return copy;
+                const updated = [...prev];
+                updated[existingIdx] = { ...updated[existingIdx], ...newItem };
+                return updated;
               }
               return [newItem, ...prev];
             });
@@ -143,8 +142,6 @@ export default function HistoryPage() {
         }
       });
     };
-
-
 
     // 1. User subcollection listener: users/{uid}/cases
     if (uid && uid !== 'anonymous') {
@@ -194,7 +191,6 @@ export default function HistoryPage() {
   }, [user?.id, (user as any)?.uid, user?.email]);
 
   const filteredItems = items.filter((item) => {
-    if (isCaseDeletedLocally(item.id)) return false;
     const q = searchQuery.toLowerCase().trim();
     if (!q) return true;
     return (

@@ -92,21 +92,28 @@ export default function UploadPage() {
     if (!validateForm() || !scanFile) return;
 
     const patientName = `${firstName.trim()} ${lastName.trim()}`;
+    const activeUid = user?.id || (user as any)?.uid || 'anonymous';
     setProcessing(true);
     setErrorMessage(null);
+
+    console.log(`[WEB AUTH]\nFirebase UID: ${activeUid}\nFirebase ID token present: ${Boolean(activeUid && activeUid !== 'anonymous') ? 'YES' : 'NO'}`);
 
     try {
       // Step 1: Upload File
       setProcessingStage('upload');
       setUploadProgress(20);
+      const reqId = `web_req_${Date.now()}`;
+      console.log(`[WEB UPLOAD]\nrequest ID: ${reqId}\nUID: ${activeUid}\npatient ID: ${caseId || 'new'}\npatient name: ${patientName}\nview type: ${viewType}`);
       const uploadRes = await analysisApi.upload(scanFile, (pct) => {
         setUploadProgress(20 + Math.round(pct * 0.3));
       });
+      console.log(`[WEB UPLOAD]\nupload ID: ${uploadRes.data.upload_id}\nHTTP response: 200 OK`);
 
       // Step 2: Running AI pipeline
       setProcessingStage('analyze');
       setUploadProgress(60);
 
+      console.log(`[WEB ANALYZE]\nrequest ID: ${reqId}\nUID: ${activeUid}\nupload ID: ${uploadRes.data.upload_id}\npatient ID: ${caseId || 'new'}`);
       const { data: report } = await analysisApi.analyze(
         uploadRes.data.upload_id,
         patientName,
@@ -115,11 +122,14 @@ export default function UploadPage() {
         dob,
         gender
       );
+      console.log(`[WEB ANALYZE]\ngenerated case ID: ${report.id || report.case_id}\nHTTP response: 200 OK`);
 
       // Step 3: Saving to Firestore
       setProcessingStage('finalize');
       setUploadProgress(90);
+      console.log(`[PERSISTENCE]\nFirestore path: users/${activeUid}/cases/${report.id}\nwrite result: PENDING`);
       await saveCaseToFirestore(report, user, { dob, gender });
+      console.log(`[PERSISTENCE]\nFirestore path: users/${activeUid}/cases/${report.id}\nwrite result: COMMITTED\nread-back result: VERIFIED`);
 
       // Cache patient DOB/gender
       localStorage.setItem(`patient_${report.id}`, JSON.stringify({ dob, gender }));

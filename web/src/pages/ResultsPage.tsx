@@ -159,16 +159,18 @@ export default function ResultsPage() {
 
       // 4. Try Backend API
       try {
+        console.log(`[WEB OPEN CASE]\nUID: ${firebaseAuth.currentUser?.uid || 'anonymous'}\ncase ID: ${id}\nfetching from backend...`);
         const { data } = await analysisApi.report(id!);
         if (data && (data.id || data.case_id)) {
+          console.log(`[WEB OPEN CASE]\nUID: ${firebaseAuth.currentUser?.uid || 'anonymous'}\ncase ID: ${id}\nHTTP response: 200 OK\nreport found: YES`);
           if (isMounted) {
             setReport(data);
             setLoading(false);
           }
           return;
         }
-      } catch (err) {
-        console.warn('Backend report fetch notice:', err);
+      } catch (err: any) {
+        console.warn(`[WEB OPEN CASE]\nUID: ${firebaseAuth.currentUser?.uid || 'anonymous'}\ncase ID: ${id}\nHTTP response: ${err.response?.status || 'ERR'}\nreport found: NO`);
       }
 
       if (isMounted) {
