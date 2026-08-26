@@ -5,10 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.orthofinixai.data.model.SavedCase
 import com.example.orthofinixai.data.repository.CaseRepository
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
 sealed class CaseListState {
@@ -20,55 +17,51 @@ sealed class CaseListState {
 class CaseViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository = CaseRepository(application.applicationContext)
+    private val searchQuery = MutableStateFlow("")
 
-    private val _uiState = MutableStateFlow<CaseListState>(CaseListState.Loading)
-    val uiState: StateFlow<CaseListState> = _uiState.asStateFlow()
+    val uiState: StateFlow<CaseListState> = combine(
+        repository.getCasesFlow(),
+        searchQuery
+    ) { allCases, query ->
+        val filtered = if (query.isBlank()) {
+            allCases
+        } else {
+            allCases.filter {
+                it.patientName.contains(query, ignoreCase = true) ||
+                it.id.contains(query, ignoreCase = true)
+            }
+        }
+        CaseListState.Success(filtered) as CaseListState
+    }.catch { e ->
+        if (e is kotlinx.coroutines.CancellationException) throw e
+        emit(CaseListState.Error(e.message ?: "Failed to load cases"))
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = CaseListState.Loading
+    )
 
-    init { loadCases() }
+    init {
+        refresh()
+    }
+
+    fun refresh() {
+        viewModelScope.launch {
+            repository.syncCasesFromCloud()
+        }
+    }
 
     fun loadCases() {
-        viewModelScope.launch {
-            _uiState.value = CaseListState.Loading
-            repository.observeCases()
-                .catch { e ->
-                    if (e is kotlinx.coroutines.CancellationException) throw e
-                    _uiState.value = CaseListState.Error(e.message ?: "Failed to load cases")
-                }
-                .collect { _uiState.value = CaseListState.Success(it) }
-        }
+        refresh()
     }
 
     fun deleteCase(caseId: String) {
         viewModelScope.launch {
-            val current = _uiState.value
-            if (current is CaseListState.Success) {
-                _uiState.value = CaseListState.Success(
-                    current.cases.filter { it.id != caseId }
-                )
-            }
             repository.deleteCase(caseId)
-            loadCases()
         }
     }
 
     fun search(query: String) {
-        viewModelScope.launch {
-            if (query.isBlank()) {
-                loadCases()
-                return@launch
-            }
-            repository.observeCases()
-                .catch { e ->
-                    if (e is kotlinx.coroutines.CancellationException) throw e
-                    _uiState.value = CaseListState.Error(e.message ?: "Search failed")
-                }
-                .collect { cases ->
-                    val filtered = cases.filter {
-                        it.patientName.contains(query, ignoreCase = true) ||
-                        it.id.contains(query, ignoreCase = true)
-                    }
-                    _uiState.value = CaseListState.Success(filtered)
-                }
-        }
+        searchQuery.value = query
     }
 }

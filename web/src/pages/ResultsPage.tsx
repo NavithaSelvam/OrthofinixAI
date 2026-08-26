@@ -30,30 +30,43 @@ export default function ResultsPage() {
       // 1. Check passed router state if available
       const passedCase = (location.state as any)?.caseItem || (location.state as any)?.report;
       if (passedCase && (passedCase.id === id || passedCase.case_id === id)) {
-        const score = Number(passedCase.overallScore ?? passedCase.overall_finishing_score ?? passedCase.finishing_score ?? 88.5);
+        const score = Math.round(Number(
+          passedCase.overall_score ?? 
+          passedCase.overallScore ?? 
+          passedCase.overall_finishing_score ?? 
+          passedCase.finishing_score ?? 
+          0
+        ));
+        const aboScore = Math.round(Number(passedCase.abo_score ?? passedCase.aboScore ?? score));
+        const andrewsScore = Math.round(Number(passedCase.andrews_score ?? passedCase.andrewsScore ?? score));
+        const alignScore = Math.round(Number(passedCase.alignment_score ?? passedCase.alignmentScore ?? score));
+        const rootScore = Math.round(Number(passedCase.root_angulation_score ?? passedCase.rootAngulationScore ?? score));
+        const rawConf = Number(passedCase.confidence_score ?? passedCase.confidenceScore ?? passedCase.confidence ?? 0.95);
+        const confPercent = Math.round(rawConf <= 1.0 ? rawConf * 100 : rawConf);
+
         const mapped: AnalysisReport = {
           id: passedCase.id || id!,
           case_id: passedCase.case_id || passedCase.id || id!,
           patient_name: passedCase.patient_name || passedCase.patientName || 'Patient',
           image_url: passedCase.image_url || passedCase.imagePath || '',
           view_type: passedCase.view_type || passedCase.viewType || 'opg',
-          status: passedCase.status || 'completed',
+          status: passedCase.status || 'ANALYZED',
           overallScore: score,
           finishing_score: score,
           overall_finishing_score: score,
-          confidence: passedCase.confidence ?? passedCase.confidence_score ?? 0.95,
-          confidence_score: passedCase.confidence_score ?? passedCase.confidence ?? 0.95,
-          alignmentScore: passedCase.alignmentScore ?? passedCase.alignment_score ?? score,
-          alignment_score: passedCase.alignment_score ?? passedCase.alignmentScore ?? score,
-          arch_symmetry_score: passedCase.arch_symmetry_score || passedCase.alignment_score || score,
+          confidence: confPercent / 100,
+          confidence_score: confPercent,
+          alignmentScore: alignScore,
+          alignment_score: alignScore,
+          arch_symmetry_score: alignScore,
           teeth: passedCase.teeth || [],
           teeth_data: passedCase.teeth_data || passedCase.teeth || [],
           midline_deviation_mm: passedCase.midline_deviation_mm || 0,
           overjet_mm: passedCase.overjet_mm || 2.4,
           overbite_percent: passedCase.overbite_percent || 25,
-          abo_score: passedCase.abo_score || score,
-          andrews_score: passedCase.andrews_score || score,
-          root_angulation_score: passedCase.root_angulation_score || score,
+          abo_score: aboScore,
+          andrews_score: andrewsScore,
+          root_angulation_score: rootScore,
           prediction: passedCase.prediction || 'Clinical analysis complete.',
           recommendations: passedCase.recommendations || [
             'Maintain optimal arch alignment and verify root parallelism on final debond.',
@@ -88,30 +101,44 @@ export default function ResultsPage() {
       try {
         const fc = await fetchCaseFromFirestore(id!);
         if (fc && isMounted) {
-          const score = Number(fc.overallScore ?? fc.overall_finishing_score ?? fc.finishing_score ?? fc.lastScore ?? 88.5);
+          const score = Math.round(Number(
+            fc.overall_score ?? 
+            fc.overallScore ?? 
+            fc.overall_finishing_score ?? 
+            fc.finishing_score ?? 
+            fc.lastScore ?? 
+            0
+          ));
+          const aboScore = Math.round(Number(fc.abo_score ?? fc.aboScore ?? score));
+          const andrewsScore = Math.round(Number(fc.andrews_score ?? fc.andrewsScore ?? score));
+          const alignScore = Math.round(Number(fc.alignment_score ?? fc.alignmentScore ?? score));
+          const rootScore = Math.round(Number(fc.root_angulation_score ?? fc.rootAngulationScore ?? score));
+          const rawConf = Number(fc.confidence_score ?? fc.confidenceScore ?? fc.confidence ?? 0.95);
+          const confPercent = Math.round(rawConf <= 1.0 ? rawConf * 100 : rawConf);
+
           const mappedReport: AnalysisReport = {
             id: fc.id || id!,
             case_id: fc.case_id || fc.caseId || id!,
             patient_name: fc.patient_name || fc.patientName || 'Patient',
             image_url: fc.image_url || fc.imagePath || '',
             view_type: fc.view_type || fc.viewType || 'opg',
-            status: fc.status || 'completed',
+            status: fc.status || 'ANALYZED',
             overallScore: score,
             finishing_score: score,
             overall_finishing_score: score,
-            confidence: fc.confidence ?? fc.confidence_score ?? 0.95,
-            confidence_score: fc.confidence_score ?? fc.confidence ?? 0.95,
-            alignmentScore: fc.alignmentScore ?? fc.alignment_score ?? score,
-            alignment_score: fc.alignment_score ?? fc.alignmentScore ?? score,
-            arch_symmetry_score: fc.arch_symmetry_score || fc.alignment_score || score,
+            confidence: confPercent / 100,
+            confidence_score: confPercent,
+            alignmentScore: alignScore,
+            alignment_score: alignScore,
+            arch_symmetry_score: alignScore,
             teeth: fc.teeth || [],
             teeth_data: fc.teeth_data || fc.teeth || [],
             midline_deviation_mm: fc.midline_deviation_mm || fc.midlineDiscrepancyMm || 0,
             overjet_mm: fc.overjet_mm || fc.overjetMm || 2.4,
             overbite_percent: fc.overbite_percent || fc.overbitePercent || 25,
-            abo_score: fc.abo_score || fc.aboScore || score,
-            andrews_score: fc.andrews_score || fc.andrewsScore || score,
-            root_angulation_score: fc.root_angulation_score || fc.rootAngulationScore || score,
+            abo_score: aboScore,
+            andrews_score: andrewsScore,
+            root_angulation_score: rootScore,
             prediction: fc.prediction || 'Clinical analysis complete.',
             recommendations: fc.recommendations || [
               'Maintain optimal arch alignment and verify root parallelism on final debond.',

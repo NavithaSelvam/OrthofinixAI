@@ -110,9 +110,16 @@ export async function saveCaseToFirestore(
   patientDetails?: { dob?: string; gender?: string; notes?: string; patientId?: string }
 ): Promise<void> {
   try {
-    const uid = firebaseAuth.currentUser?.uid || user?.id || (user as any)?.uid || (report as any).user_id || 'anonymous_doctor';
-    const email = firebaseAuth.currentUser?.email || user?.email || (report as any).doctor_email || '';
+    const activeUid = firebaseAuth.currentUser?.uid || user?.id || (user as any)?.uid || (report as any).user_id;
+    const activeEmail = firebaseAuth.currentUser?.email || user?.email || (report as any).doctor_email || '';
     const name = firebaseAuth.currentUser?.displayName || user?.display_name || (report as any).doctor_name || 'Doctor';
+
+    if (!activeUid) {
+      throw new Error('User not authenticated. Cannot save case to Firestore.');
+    }
+
+    const uid = activeUid;
+    const email = activeEmail;
     const caseId = report.id || `case_${Date.now()}`;
     const now = new Date();
     const nowIso = now.toISOString();
@@ -126,15 +133,16 @@ export async function saveCaseToFirestore(
 
     const dobVal = patientDetails?.dob || (report as any).dob || (report as any).date_of_birth || '';
     const genderVal = patientDetails?.gender || (report as any).gender || 'Unknown';
-    const finishingScore = Number(report.finishing_score || report.overall_finishing_score || 0);
-    const alignmentScore = Number(report.alignment_score || report.arch_symmetry_score || 0);
-    const confidenceScore = Number(report.confidence_score || 0.95);
+    const finishingScore = Math.round(Number(report.finishing_score || report.overall_finishing_score || (report as any).overall_score || 0));
+    const alignmentScore = Math.round(Number(report.alignment_score || report.arch_symmetry_score || 0));
+    const rawConf = Number(report.confidence_score || (report as any).confidence || 0.95);
+    const confidenceScore = Math.round(rawConf <= 1.0 ? rawConf * 100 : rawConf);
     const midlineVal = Number(report.midline_deviation_mm || report.midline_discrepancy_mm || 0);
     const overjetVal = Number(report.overjet_mm || 0);
     const overbiteVal = Number(report.overbite_percent || 0);
-    const aboScore = Number(report.abo_score || 0);
-    const andrewsScore = Number(report.andrews_score || 0);
-    const rootAngulationScore = Number(report.root_angulation_score || 0);
+    const aboScore = Math.round(Number((report as any).abo_score ?? (report as any).aboScore ?? finishingScore));
+    const andrewsScore = Math.round(Number((report as any).andrews_score ?? (report as any).andrewsScore ?? finishingScore));
+    const rootAngulationScore = Math.round(Number((report as any).root_angulation_score ?? (report as any).rootAngulationScore ?? finishingScore));
     const imageUrl = report.image_url || '';
     const viewType = report.view_type || 'opg';
 
@@ -169,6 +177,7 @@ export async function saveCaseToFirestore(
       doctor_id: uid,
       doctorId: uid,
       user_id: uid,
+      email: email,
       doctor_email: email,
       doctor_name: name,
       doctorName: name,
@@ -178,15 +187,16 @@ export async function saveCaseToFirestore(
       overallScore: finishingScore,
       overall_finishing_score: finishingScore,
       finishing_score: finishingScore,
-      confidence: confidenceScore,
+      overall_score: finishingScore,
+      confidence: confidenceScore / 100.0,
       confidence_score: confidenceScore,
       confidenceScore: confidenceScore,
       alignmentScore: alignmentScore,
       alignment_score: alignmentScore,
       arch_symmetry_score: alignmentScore,
       archSymmetryScore: alignmentScore,
-      cariesScore: 92.0,
-      boneLossScore: 89.0,
+      cariesScore: 92,
+      boneLossScore: 89,
       teeth: report.teeth ? report.teeth.map((t: any) => ({
         toothNumber: t.toothNumber || t.fdi,
         name: t.name || `Tooth ${t.toothNumber || t.fdi}`,
@@ -233,23 +243,62 @@ export async function saveCaseToFirestore(
       updatedAt: nowMs
     };
 
+    const userUid = uid;
     const rawJson = JSON.stringify(cleanCaseData);
     cleanCaseData.clinicalDataJson = rawJson;
     cleanCaseData.reportJson = rawJson;
 
-    // 1. Save to Root "cases" collection
-    await setDoc(doc(db, 'cases', caseId), cleanCaseData, { merge: true });
+    const andrewsKeysData = (report as any).andrews_keys || (report as any).metrics?.andrews_details || cleanCaseData.andrewsKeys || {};
+    const aboDeductionsData = (report as any).abo_deductions || (report as any).metrics?.abo_deductions || {};
+    const toothFindingsData = report.teeth || report.teeth_data || cleanCaseData.teeth || [];
 
-    // 2. Save to Root "analysis_reports" collection
-    await setDoc(doc(db, 'analysis_reports', caseId), cleanCaseData, { merge: true });
+    cleanCaseData.overall_score = finishingScore;
+    cleanCaseData.overallScore = finishingScore;
+    cleanCaseData.abo_score = aboScore;
+    cleanCaseData.andrews_score = andrewsScore;
+    cleanCaseData.confidence_score = confidenceScore;
+    cleanCaseData.status = "ANALYZED";
+    cleanCaseData.andrews_keys = andrewsKeysData;
+    cleanCaseData.abo_deductions = aboDeductionsData;
+    cleanCaseData.tooth_findings = toothFindingsData;
 
-    // 3. Save to Root "analyses" collection
-    await setDoc(doc(db, 'analyses', caseId), cleanCaseData, { merge: true });
+    // Use Firestore writeBatch for atomic synchronous persistence across subcollection & root collections
+    const batch = writeBatch(db);
 
-    // 4. Save to user subcollection users/{uid}/cases/{caseId}
-    if (uid && uid !== 'anonymous_doctor') {
-      await setDoc(doc(db, 'users', uid, 'cases', caseId), cleanCaseData, { merge: true });
-    }
+    const subDocRef = doc(db, 'users', userUid, 'cases', caseId);
+    const subAnalysisRef = doc(db, 'users', userUid, 'analyses', caseId);
+    const rootCaseRef = doc(db, 'cases', caseId);
+    const rootReportRef = doc(db, 'analysis_reports', caseId);
+    const rootAnalysisRef = doc(db, 'analyses', caseId);
+    const userProfileRef = doc(db, 'users', userUid);
+
+    const unifiedPayload = {
+      ...cleanCaseData,
+      id: caseId,
+      case_id: caseId,
+      user_id: userUid,
+      doctor_id: userUid,
+      email: email,
+      doctor_email: email,
+      patient_name: patientName || 'Unnamed Patient',
+      overall_score: finishingScore,
+      abo_score: aboScore,
+      andrews_score: andrewsScore,
+      confidence_score: confidenceScore,
+      status: "ANALYZED",
+      image_url: imageUrl || '',
+      created_at: serverTimestamp(),
+      updated_at: serverTimestamp(),
+    };
+
+    batch.set(subDocRef, unifiedPayload, { merge: true });
+    batch.set(subAnalysisRef, unifiedPayload, { merge: true });
+    batch.set(rootCaseRef, unifiedPayload, { merge: true });
+    batch.set(rootReportRef, unifiedPayload, { merge: true });
+    batch.set(rootAnalysisRef, unifiedPayload, { merge: true });
+    batch.set(userProfileRef, { total_cases: increment(1), last_active: serverTimestamp() }, { merge: true });
+
+    await batch.commit();
 
     // 5. Save to Root "patients" collection
     const patientDoc: Record<string, any> = {
@@ -259,6 +308,8 @@ export async function saveCaseToFirestore(
       patientName: patientName,
       doctor_id: uid,
       doctorId: uid,
+      user_id: uid,
+      email: email,
       doctor_email: email,
       doctor_name: name,
       doctorName: name,
@@ -287,6 +338,8 @@ export async function saveCaseToFirestore(
         case_id: caseId,
         caseId: caseId,
         user_id: uid,
+        doctor_id: uid,
+        email: email,
         doctor_email: email,
         patient_name: patientName,
         storage_url: imageUrl,
@@ -299,27 +352,25 @@ export async function saveCaseToFirestore(
     }
 
     // 7. Update user's summary metrics in users/{uid}
-    if (uid && uid !== 'anonymous_doctor') {
-      try {
-        await updateDoc(doc(db, 'users', uid), {
-          last_analysis_at: nowIso,
-          last_active: nowIso,
-          last_case_id: caseId,
-          total_cases: increment(1),
-          updated_at: serverTimestamp(),
-        });
-      } catch {
-        await setDoc(doc(db, 'users', uid), {
-          uid,
-          email,
-          display_name: name,
-          last_analysis_at: nowIso,
-          last_active: nowIso,
-          last_case_id: caseId,
-          total_cases: 1,
-          updated_at: serverTimestamp(),
-        }, { merge: true });
-      }
+    try {
+      await updateDoc(doc(db, 'users', uid), {
+        last_analysis_at: nowIso,
+        last_active: serverTimestamp(),
+        last_case_id: caseId,
+        total_cases: increment(1),
+        updated_at: serverTimestamp(),
+      });
+    } catch {
+      await setDoc(doc(db, 'users', uid), {
+        uid,
+        email,
+        display_name: name,
+        last_analysis_at: nowIso,
+        last_active: nowIso,
+        last_case_id: caseId,
+        total_cases: 1,
+        updated_at: serverTimestamp(),
+      }, { merge: true });
     }
 
     // 8. Log activity
@@ -338,14 +389,15 @@ export async function saveCaseToFirestore(
  * Fetches user cases directly from Firestore strictly isolated by the authenticated user's UID
  */
 export async function fetchUserCasesFromFirestore(uid: string): Promise<any[]> {
-  if (!uid || uid === 'anonymous') return [];
-  console.log("Web UID:", firebaseAuth.currentUser?.uid || uid);
+  const effectiveUid = firebaseAuth.currentUser?.uid || uid;
+  if (!effectiveUid || effectiveUid === 'anonymous') return [];
+  console.log("Web UID:", effectiveUid);
   const caseMap = new Map<string, any>();
   const email = firebaseAuth.currentUser?.email || '';
   
-  // 1. Query user's private subcollection: users/{uid}/cases (Primary)
+  // 1. Query user's private subcollection: users/{effectiveUid}/cases (Primary)
   try {
-    const subColRef = collection(db, 'users', uid, 'cases');
+    const subColRef = collection(db, 'users', effectiveUid, 'cases');
     const subSnap = await getDocs(subColRef);
     subSnap.docs.forEach((d) => {
       caseMap.set(d.id, { id: d.id, ...d.data() });
@@ -354,14 +406,15 @@ export async function fetchUserCasesFromFirestore(uid: string): Promise<any[]> {
     console.warn('[Firestore] User subcollection query notice:', err);
   }
 
-  // 2. Query collections with multiple UID field variants
+  // 2. Query collections with multiple UID & email field variants (Failsafe)
   const colls = ['cases', 'analyses', 'analysis_reports'];
-  const fields = ['doctor_id', 'doctorId', 'user_id', 'uid'];
+  const uidFields = ['doctor_id', 'doctorId', 'user_id', 'userId', 'uid'];
+  const emailFields = ['doctor_email', 'email'];
 
   for (const collName of colls) {
-    for (const field of fields) {
+    for (const field of uidFields) {
       try {
-        const q = query(collection(db, collName), where(field, '==', uid));
+        const q = query(collection(db, collName), where(field, '==', effectiveUid));
         const snap = await getDocs(q);
         snap.docs.forEach((d) => {
           if (!caseMap.has(d.id)) {
@@ -372,15 +425,17 @@ export async function fetchUserCasesFromFirestore(uid: string): Promise<any[]> {
     }
 
     if (email) {
-      try {
-        const qEmail = query(collection(db, collName), where('email', '==', email));
-        const snapEmail = await getDocs(qEmail);
-        snapEmail.docs.forEach((d) => {
-          if (!caseMap.has(d.id)) {
-            caseMap.set(d.id, { id: d.id, ...d.data() });
-          }
-        });
-      } catch (_: any) {}
+      for (const field of emailFields) {
+        try {
+          const qEmail = query(collection(db, collName), where(field, '==', email));
+          const snapEmail = await getDocs(qEmail);
+          snapEmail.docs.forEach((d) => {
+            if (!caseMap.has(d.id)) {
+              caseMap.set(d.id, { id: d.id, ...d.data() });
+            }
+          });
+        } catch (_: any) {}
+      }
     }
   }
 
@@ -390,9 +445,9 @@ export async function fetchUserCasesFromFirestore(uid: string): Promise<any[]> {
       const snap = await getDocs(collection(db, collName));
       snap.docs.forEach((d) => {
         const data = d.data();
-        const docUid = data.doctor_id || data.doctorId || data.user_id || data.uid;
+        const docUid = data.doctor_id || data.doctorId || data.user_id || data.userId || data.uid;
         const docEmail = data.email || data.doctor_email || '';
-        if (docUid === uid || (email && docEmail === email)) {
+        if (docUid === effectiveUid || (email && docEmail.toLowerCase() === email.toLowerCase())) {
           if (!caseMap.has(d.id)) {
             caseMap.set(d.id, { id: d.id, ...data });
           }
@@ -508,83 +563,46 @@ export async function deleteCaseFromFirestore(caseId: string, uid?: string): Pro
     if (!caseId) return;
     markCaseAsDeletedLocally(caseId);
     const effectiveUid = uid || firebaseAuth.currentUser?.uid;
-    const idsToDelete = new Set<string>([caseId]);
 
-    // 1. If effectiveUid is known, delete from users/{uid}/cases and discover all ID variants
+    const batch = writeBatch(db);
     if (effectiveUid) {
-      try {
-        await deleteDoc(doc(db, 'users', effectiveUid, 'cases', caseId)).catch(() => {});
-        const userCasesSnap = await getDocs(collection(db, 'users', effectiveUid, 'cases')).catch(() => null);
-        if (userCasesSnap) {
-          for (const d of userCasesSnap.docs) {
-            const data = d.data();
-            if (
-              d.id === caseId ||
-              data.id === caseId ||
-              data.case_id === caseId ||
-              data.caseId === caseId
-            ) {
-              idsToDelete.add(d.id);
-              if (data.id) idsToDelete.add(data.id);
-              if (data.case_id) idsToDelete.add(data.case_id);
-              if (data.caseId) idsToDelete.add(data.caseId);
-              await deleteDoc(d.ref).catch(() => {});
-            }
-          }
-        }
-      } catch (err) {
-        console.warn('[Firestore] Delete user subcollection notice:', err);
-      }
+      batch.delete(doc(db, 'users', effectiveUid, 'cases', caseId));
+      batch.delete(doc(db, 'users', effectiveUid, 'analyses', caseId));
+      batch.update(doc(db, 'users', effectiveUid), { total_cases: increment(-1) });
     }
+    batch.delete(doc(db, 'cases', caseId));
+    batch.delete(doc(db, 'analysis_reports', caseId));
+    batch.delete(doc(db, 'analyses', caseId));
+    batch.delete(doc(db, 'images', caseId));
+    batch.delete(doc(db, 'images', `img_${caseId}`));
 
-    // 2. Query root collections 'cases', 'analysis_reports', 'analyses' for matching IDs
-    for (const collName of ['cases', 'analysis_reports', 'analyses']) {
-      try {
-        const snap = await getDocs(collection(db, collName)).catch(() => null);
-        if (snap) {
-          for (const d of snap.docs) {
-            const data = d.data();
-            const dUid = data.user_id || data.doctor_id || data.doctorId;
-            if (
-              d.id === caseId ||
-              idsToDelete.has(d.id) ||
-              idsToDelete.has(data.id) ||
-              idsToDelete.has(data.case_id) ||
-              idsToDelete.has(data.caseId)
-            ) {
-              if (!effectiveUid || dUid === effectiveUid || !dUid) {
-                idsToDelete.add(d.id);
-                if (data.id) idsToDelete.add(data.id);
-                if (data.case_id) idsToDelete.add(data.case_id);
-                if (data.caseId) idsToDelete.add(data.caseId);
-                await deleteDoc(d.ref).catch(() => {});
-              }
-            }
-          }
-        }
-      } catch {}
-    }
-
-    // 3. Delete across all candidate IDs in all root collections and mark them
-    for (const cid of idsToDelete) {
-      markCaseAsDeletedLocally(cid);
-      await deleteDoc(doc(db, 'cases', cid)).catch(() => {});
-      await deleteDoc(doc(db, 'analysis_reports', cid)).catch(() => {});
-      await deleteDoc(doc(db, 'analyses', cid)).catch(() => {});
-      await deleteDoc(doc(db, 'images', `img_${cid}`)).catch(() => {});
-      await deleteDoc(doc(db, 'images', cid)).catch(() => {});
+    try {
+      await batch.commit();
+    } catch (_batchErr) {
+      // Fallback to individual deletes if document or user doc does not exist
       if (effectiveUid) {
-        await deleteDoc(doc(db, 'users', effectiveUid, 'cases', cid)).catch(() => {});
+        await deleteDoc(doc(db, 'users', effectiveUid, 'cases', caseId)).catch(() => {});
+        await deleteDoc(doc(db, 'users', effectiveUid, 'analyses', caseId)).catch(() => {});
       }
+      await deleteDoc(doc(db, 'cases', caseId)).catch(() => {});
+      await deleteDoc(doc(db, 'analysis_reports', caseId)).catch(() => {});
+      await deleteDoc(doc(db, 'analyses', caseId)).catch(() => {});
+      await deleteDoc(doc(db, 'images', caseId)).catch(() => {});
+      await deleteDoc(doc(db, 'images', `img_${caseId}`)).catch(() => {});
     }
 
+    // Call backend authoritative delete endpoint
+    try {
+      const { analysisApi } = await import('./api');
+      await analysisApi.delete(caseId);
+    } catch {}
     // 4. Delete associated patient doc if matched
     try {
       const snap = await getDocs(collection(db, 'patients')).catch(() => null);
       if (snap) {
         for (const pDoc of snap.docs) {
           const pd = pDoc.data();
-          if (idsToDelete.has(pd.last_case_id) || idsToDelete.has(pd.lastCaseId)) {
+          if (pd.last_case_id === caseId || pd.lastCaseId === caseId) {
             await deleteDoc(pDoc.ref).catch(() => {});
           }
         }
@@ -594,9 +612,7 @@ export async function deleteCaseFromFirestore(caseId: string, uid?: string): Pro
     // 5. Clear local and session storage
     sessionStorage.removeItem('last_report');
     sessionStorage.removeItem('current_patient_case_id');
-    for (const cid of idsToDelete) {
-      localStorage.removeItem(`patient_${cid}`);
-    }
+    localStorage.removeItem(`patient_${caseId}`);
   } catch (err) {
     console.warn('[Firestore] Delete notice:', err);
   }

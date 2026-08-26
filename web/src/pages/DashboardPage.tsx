@@ -110,12 +110,15 @@ export default function DashboardPage() {
           if (matches && !isCaseDeletedLocally(cId)) {
             setRecentCases((prev) => {
               const existingIdx = prev.findIndex((p) => p.id === cId || (p as any).case_id === cId);
+              const score = Math.round(Number(docData.overall_score ?? docData.overallScore ?? docData.finishing_score ?? docData.overall_finishing_score ?? 0));
+              const rawConf = Number(docData.confidence_score ?? docData.confidenceScore ?? docData.confidence ?? 0.95);
+              const confPercent = Math.round(rawConf <= 1.0 ? rawConf * 100 : rawConf);
               const newItem: HistoryItem = {
                 id: cId,
                 patient_name: docData.patient_name || docData.patientName || 'Patient',
-                finishing_score: docData.finishing_score || docData.overall_finishing_score || 0,
-                overall_finishing_score: docData.overall_finishing_score || docData.finishing_score || 0,
-                confidence_score: docData.confidence_score || 0.95,
+                finishing_score: score,
+                overall_finishing_score: score,
+                confidence_score: confPercent,
                 created_at: docData.created_at || new Date().toISOString(),
                 image_url: docData.image_url || docData.imagePath || '',
                 view_type: docData.view_type || docData.viewType || 'opg',
@@ -135,7 +138,7 @@ export default function DashboardPage() {
 
 
 
-    // 2. User subcollection listener
+    // 1. User subcollection listener: users/{uid}/cases
     if (uid && uid !== 'anonymous') {
       try {
         const unsubSub = onSnapshot(
@@ -143,14 +146,34 @@ export default function DashboardPage() {
           (snapshot) => {
             console.log("WEB FIRESTORE: Received", snapshot.docs.length, "cases from user subcollection");
             handleSnapshotChange(snapshot);
+            setLoading(false);
           },
           (error) => {
             console.error("WEB FIRESTORE SUBCOLLECTION ERROR:", error.code, error.message);
+            setLoading(false);
           }
         );
         unsubs.push(unsubSub);
       } catch (e) {
         console.warn("Failed to subscribe to user cases subcollection:", e);
+      }
+
+      // 2. Root cases query listener: cases where user_id == uid
+      try {
+        const qRoot = query(collection(db, 'cases'), where('user_id', '==', uid));
+        const unsubRoot = onSnapshot(
+          qRoot,
+          (snapshot) => {
+            handleSnapshotChange(snapshot);
+            setLoading(false);
+          },
+          (error) => {
+            console.warn("WEB FIRESTORE ROOT CASES QUERY ERROR:", error.code, error.message);
+          }
+        );
+        unsubs.push(unsubRoot);
+      } catch (e) {
+        console.warn("Failed to subscribe to root cases collection:", e);
       }
     }
 

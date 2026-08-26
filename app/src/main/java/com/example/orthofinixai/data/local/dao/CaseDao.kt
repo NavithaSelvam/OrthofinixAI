@@ -9,11 +9,9 @@ interface CaseDao {
     @Query("SELECT * FROM cases WHERE userId = :userId ORDER BY createdAt DESC")
     fun getCasesForUser(userId: String): Flow<List<CaseEntity>>
 
-    @Query("SELECT * FROM cases ORDER BY createdAt DESC")
-    fun getAllCases(): Flow<List<CaseEntity>>
+    @Query("SELECT * FROM cases WHERE userId = :userId ORDER BY createdAt DESC")
+    suspend fun getCasesForUserList(userId: String): List<CaseEntity>
 
-    @Query("SELECT * FROM cases ORDER BY createdAt DESC")
-    suspend fun getAllCasesList(): List<CaseEntity>
 
     @Query("SELECT * FROM cases WHERE (userId = :userId OR :userId = '') AND (id = :id OR patientId = :id OR reportId = :id OR patientName = :id OR LOWER(patientName) = LOWER(:id)) LIMIT 1")
     suspend fun getCase(userId: String, id: String): CaseEntity?
@@ -41,6 +39,9 @@ interface CaseDao {
 
     @Query("DELETE FROM cases WHERE userId = :userId AND id NOT IN (:validIds)")
     suspend fun deleteCasesNotInList(userId: String, validIds: List<String>)
+
+    @Query("DELETE FROM cases WHERE userId = :userId")
+    suspend fun deleteCasesForUser(userId: String)
 
     @Query("DELETE FROM cases")
     suspend fun deleteAllCases()

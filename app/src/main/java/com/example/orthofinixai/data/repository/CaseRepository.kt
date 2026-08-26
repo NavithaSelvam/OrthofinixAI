@@ -16,8 +16,10 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.storage.FirebaseStorage
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.tasks.await
@@ -59,61 +61,287 @@ class CaseRepository(private val context: Context) {
         }
     }
 
-    fun observeCases(): Flow<List<SavedCase>> = kotlinx.coroutines.flow.channelFlow {
-        val uid = userId()
-        
-        // 1. Observe local Room DB cases strictly for the current logged in UID
-        val localJob = this@channelFlow.launch(Dispatchers.IO) {
-            try {
-                caseDao.getCasesForUser(uid).collect { entities ->
-                    val mapped = entities
-                        .filter { !isCaseDeletedLocally(it.id) }
-                        .map { entity ->
-                            val patientEntity = patientDao.getPatient(uid, entity.patientId) 
-                                ?: patientDao.getPatientById(entity.patientId)
-                            entity.toSavedCase(patientEntity)
-                        }
-                    send(mapped)
-                }
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e(TAG, "Error collecting local cases", e)
-            }
-        }
-        
-        // 2. Fetch authoritative remote cases from FastAPI Backend API, reconcile to Room
-        this@channelFlow.launch(Dispatchers.IO) {
-            try {
-                val effectiveUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: uid
-                Log.d("AUTH_DEBUG", "Mobile UID for sync: $effectiveUid")
-                val validRemoteIds = mutableSetOf<String>()
-                var apiSuccess = false
+    private var snapshotRegistration: com.google.firebase.firestore.ListenerRegistration? = null
+    private var rootSnapshotRegistration: com.google.firebase.firestore.ListenerRegistration? = null
 
-                // Authoritative Backend API History
-                try {
-                    val token = authRepository.getUserIdToken()
-                    if (!token.isNullOrEmpty()) {
-                        val api = OrthofinixApi.create()
-                        val apiCases = api.getHistory("Bearer $token")
-                        apiSuccess = true
-                        apiCases.forEach { item ->
-                            if (!isCaseDeletedLocally(item.id)) {
-                                val score = item.finishingScore ?: 0f
-                                validRemoteIds.add(item.id)
+    fun startRealtimeSync(uid: String = userId()) {
+        val effectiveUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: uid
+        if (effectiveUid.isEmpty() || effectiveUid == "anonymous") return
 
-                                var parsedTime = System.currentTimeMillis()
-                                val createdStr = item.createdAt
-                                if (!createdStr.isNullOrEmpty()) {
-                                    try {
-                                        val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).apply {
-                                            timeZone = java.util.TimeZone.getTimeZone("UTC")
+        try {
+            snapshotRegistration?.remove()
+            snapshotRegistration = firestore.collection("users")
+                .document(effectiveUid)
+                .collection("cases")
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        Log.w(TAG, "Firestore real-time listener notice: ${error.message}")
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null) {
+                        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+                            for (change in snapshot.documentChanges) {
+                                val doc = change.document
+                                val caseId = doc.id
+                                when (change.type) {
+                                    com.google.firebase.firestore.DocumentChange.Type.REMOVED -> {
+                                        markCaseAsDeletedLocally(caseId)
+                                        caseDao.deleteCaseById(caseId)
+                                        caseDao.deleteCase(effectiveUid, caseId)
+                                    }
+                                    com.google.firebase.firestore.DocumentChange.Type.ADDED,
+                                    com.google.firebase.firestore.DocumentChange.Type.MODIFIED -> {
+                                        if (!isCaseDeletedLocally(caseId)) {
+                                            val sc = SavedCase.fromFirestoreDoc(doc)
+                                            val caseEntity = CaseEntity(
+                                                id = sc.id,
+                                                userId = effectiveUid,
+                                                patientId = sc.patientId,
+                                                patientName = sc.patientName,
+                                                title = "Assessment Finishing: ${sc.viewType.uppercase()}",
+                                                viewType = sc.viewType,
+                                                imagePath = sc.imagePath,
+                                                reportJson = sc.clinicalDataJson,
+                                                reportId = sc.id,
+                                                confidenceScore = if (sc.confidenceScore > 1) sc.confidenceScore.toFloat() / 100f else sc.confidenceScore.toFloat(),
+                                                aboScore = sc.aboScore.toFloat(),
+                                                andrewsScore = sc.andrewsScore.toFloat(),
+                                                status = "Analyzed",
+                                                createdAt = sc.createdAt,
+                                                updatedAt = sc.createdAt
+                                            )
+                                            val patientEntity = PatientEntity(
+                                                id = sc.patientId,
+                                                userId = effectiveUid,
+                                                name = sc.patientName,
+                                                age = 25,
+                                                gender = "Unknown",
+                                                phone = "",
+                                                notes = "",
+                                                createdAt = sc.createdAt
+                                            )
+                                            patientDao.insertPatient(patientEntity)
+                                            caseDao.insertCase(caseEntity)
                                         }
-                                        parsedTime = sdf.parse(createdStr.take(19))?.time ?: System.currentTimeMillis()
-                                    } catch (_: Exception) {}
+                                    }
                                 }
+                            }
+                        }
+                    }
+                }
 
-                                val caseEntity = CaseEntity(
+            rootSnapshotRegistration?.remove()
+            rootSnapshotRegistration = firestore.collection("cases")
+                .whereEqualTo("user_id", effectiveUid)
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null) {
+                        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+                            for (change in snapshot.documentChanges) {
+                                val doc = change.document
+                                val caseId = doc.id
+                                when (change.type) {
+                                    com.google.firebase.firestore.DocumentChange.Type.REMOVED -> {
+                                        markCaseAsDeletedLocally(caseId)
+                                        caseDao.deleteCaseById(caseId)
+                                        caseDao.deleteCase(effectiveUid, caseId)
+                                    }
+                                    com.google.firebase.firestore.DocumentChange.Type.ADDED,
+                                    com.google.firebase.firestore.DocumentChange.Type.MODIFIED -> {
+                                        if (!isCaseDeletedLocally(caseId)) {
+                                            val sc = SavedCase.fromFirestoreDoc(doc)
+                                            val caseEntity = CaseEntity(
+                                                id = sc.id,
+                                                userId = effectiveUid,
+                                                patientId = sc.patientId,
+                                                patientName = sc.patientName,
+                                                title = "Assessment Finishing: ${sc.viewType.uppercase()}",
+                                                viewType = sc.viewType,
+                                                imagePath = sc.imagePath,
+                                                reportJson = sc.clinicalDataJson,
+                                                reportId = sc.id,
+                                                confidenceScore = if (sc.confidenceScore > 1) sc.confidenceScore.toFloat() / 100f else sc.confidenceScore.toFloat(),
+                                                aboScore = sc.aboScore.toFloat(),
+                                                andrewsScore = sc.andrewsScore.toFloat(),
+                                                status = "Analyzed",
+                                                createdAt = sc.createdAt,
+                                                updatedAt = sc.createdAt
+                                            )
+                                            val patientEntity = PatientEntity(
+                                                id = sc.patientId,
+                                                userId = effectiveUid,
+                                                name = sc.patientName,
+                                                age = 25,
+                                                gender = "Unknown",
+                                                phone = "",
+                                                notes = "",
+                                                createdAt = sc.createdAt
+                                            )
+                                            patientDao.insertPatient(patientEntity)
+                                            caseDao.insertCase(caseEntity)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to start real-time sync listener: ${e.message}")
+        }
+    }
+
+    fun getCasesFlow(uid: String = userId()): Flow<List<SavedCase>> {
+        startRealtimeSync(uid)
+        return caseDao.getCasesForUser(uid).map { entities ->
+            entities.filter { !isCaseDeletedLocally(it.id) }.map { entity ->
+                val patientEntity = patientDao.getPatient(uid, entity.patientId) ?: patientDao.getPatientById(entity.patientId)
+                entity.toSavedCase(patientEntity)
+            }
+        }.flowOn(Dispatchers.IO)
+    }
+
+    fun observeCases(): Flow<List<SavedCase>> = getCasesFlow()
+
+    suspend fun syncCasesFromCloud(uid: String = userId()) {
+        withContext(Dispatchers.IO) {
+            val effectiveUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: uid
+            val currentUserEmail = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.email ?: ""
+            if (effectiveUid.isEmpty() || effectiveUid == "anonymous") return@withContext
+
+            val validRemoteIds = mutableSetOf<String>()
+            val newEntities = mutableListOf<CaseEntity>()
+            val newPatients = mutableListOf<PatientEntity>()
+
+            // 1. Direct Firestore user subcollection fetch: users/{uid}/cases
+            try {
+                val subSnap = firestore.collection("users").document(effectiveUid).collection("cases").get().await()
+                for (doc in subSnap.documents) {
+                    if (!isCaseDeletedLocally(doc.id)) {
+                        val sc = SavedCase.fromFirestoreDoc(doc)
+                        validRemoteIds.add(sc.id)
+                        newEntities.add(
+                            CaseEntity(
+                                id = sc.id,
+                                userId = effectiveUid,
+                                patientId = sc.patientId,
+                                patientName = sc.patientName,
+                                title = "Assessment Finishing: ${sc.viewType.uppercase()}",
+                                viewType = sc.viewType,
+                                imagePath = sc.imagePath,
+                                reportJson = sc.clinicalDataJson,
+                                reportId = sc.id,
+                                confidenceScore = if (sc.confidenceScore > 1) sc.confidenceScore.toFloat() / 100f else sc.confidenceScore.toFloat(),
+                                aboScore = sc.aboScore.toFloat(),
+                                andrewsScore = sc.andrewsScore.toFloat(),
+                                status = "Analyzed",
+                                createdAt = sc.createdAt,
+                                updatedAt = sc.createdAt
+                            )
+                        )
+                        newPatients.add(
+                            PatientEntity(
+                                id = sc.patientId,
+                                userId = effectiveUid,
+                                name = sc.patientName,
+                                age = 25,
+                                gender = "Unknown",
+                                phone = "",
+                                notes = "",
+                                createdAt = sc.createdAt
+                            )
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Notice on Firestore subcollection sync: ${e.message}")
+            }
+
+            // 2. Direct Firestore root cases query by UID and email fields (Failsafe)
+            try {
+                val collectionsToQuery = listOf("cases", "analyses", "analysis_reports")
+                for (colName in collectionsToQuery) {
+                    val queries = mutableListOf<com.google.firebase.firestore.Query>()
+                    queries.add(firestore.collection(colName).whereEqualTo("user_id", effectiveUid))
+                    queries.add(firestore.collection(colName).whereEqualTo("doctor_id", effectiveUid))
+                    queries.add(firestore.collection(colName).whereEqualTo("userId", effectiveUid))
+                    queries.add(firestore.collection(colName).whereEqualTo("doctorId", effectiveUid))
+                    if (currentUserEmail.isNotEmpty()) {
+                        queries.add(firestore.collection(colName).whereEqualTo("doctor_email", currentUserEmail))
+                        queries.add(firestore.collection(colName).whereEqualTo("email", currentUserEmail))
+                    }
+
+                    for (q in queries) {
+                        try {
+                            val rootSnap = q.get().await()
+                            for (doc in rootSnap.documents) {
+                                if (!isCaseDeletedLocally(doc.id) && !validRemoteIds.contains(doc.id)) {
+                                    val sc = SavedCase.fromFirestoreDoc(doc)
+                                    validRemoteIds.add(sc.id)
+                                    newEntities.add(
+                                        CaseEntity(
+                                            id = sc.id,
+                                            userId = effectiveUid,
+                                            patientId = sc.patientId,
+                                            patientName = sc.patientName,
+                                            title = "Assessment Finishing: ${sc.viewType.uppercase()}",
+                                            viewType = sc.viewType,
+                                            imagePath = sc.imagePath,
+                                            reportJson = sc.clinicalDataJson,
+                                            reportId = sc.id,
+                                            confidenceScore = if (sc.confidenceScore > 1) sc.confidenceScore.toFloat() / 100f else sc.confidenceScore.toFloat(),
+                                            aboScore = sc.aboScore.toFloat(),
+                                            andrewsScore = sc.andrewsScore.toFloat(),
+                                            status = "Analyzed",
+                                            createdAt = sc.createdAt,
+                                            updatedAt = sc.createdAt
+                                        )
+                                    )
+                                    newPatients.add(
+                                        PatientEntity(
+                                            id = sc.patientId,
+                                            userId = effectiveUid,
+                                            name = sc.patientName,
+                                            age = 25,
+                                            gender = "Unknown",
+                                            phone = "",
+                                            notes = "",
+                                            createdAt = sc.createdAt
+                                        )
+                                    )
+                                }
+                            }
+                        } catch (_: Exception) {}
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Notice on Firestore root cases sync: ${e.message}")
+            }
+
+            // 3. Backend API History Fetch
+            try {
+                val token = authRepository.getUserIdToken()
+                if (!token.isNullOrEmpty()) {
+                    val api = OrthofinixApi.create()
+                    val apiCases = api.getHistory("Bearer $token")
+                    apiCases.forEach { item ->
+                        if (!isCaseDeletedLocally(item.id) && !validRemoteIds.contains(item.id)) {
+                            validRemoteIds.add(item.id)
+                            val score = item.finishingScore ?: 0f
+                            var parsedTime = System.currentTimeMillis()
+                            val createdStr = item.createdAt
+                            if (!createdStr.isNullOrEmpty()) {
+                                try {
+                                    val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).apply {
+                                        timeZone = java.util.TimeZone.getTimeZone("UTC")
+                                    }
+                                    parsedTime = sdf.parse(createdStr.take(19))?.time ?: System.currentTimeMillis()
+                                } catch (_: Exception) {}
+                            }
+                            newEntities.add(
+                                CaseEntity(
                                     id = item.id,
                                     userId = effectiveUid,
                                     patientId = item.id,
@@ -130,9 +358,9 @@ class CaseRepository(private val context: Context) {
                                     createdAt = parsedTime,
                                     updatedAt = parsedTime
                                 )
-                                caseDao.insertCase(caseEntity)
-
-                                val patientEntity = PatientEntity(
+                            )
+                            newPatients.add(
+                                PatientEntity(
                                     id = item.id,
                                     userId = effectiveUid,
                                     name = item.patientName ?: "Patient",
@@ -142,85 +370,23 @@ class CaseRepository(private val context: Context) {
                                     notes = "",
                                     createdAt = parsedTime
                                 )
-                                patientDao.insertPatient(patientEntity)
-                            }
+                            )
                         }
                     }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Notice on API history sync: ${e.message}")
                 }
-
-                // Reconcile local Room DB: Clean table sync removing stale cases deleted remotely or from prior users
-                if (apiSuccess && effectiveUid.isNotEmpty() && effectiveUid != "anonymous") {
-                    caseDao.deleteCasesNotInList(effectiveUid, validRemoteIds.toList())
-                    caseDao.deleteCasesNotForUser(effectiveUid)
-                }
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
             } catch (e: Exception) {
-                Log.e(TAG, "Error fetching from remote API", e)
+                Log.w(TAG, "Notice on API history sync: ${e.message}")
+            }
+
+            if (newEntities.isNotEmpty()) {
+                caseDao.insertAll(newEntities)
+                patientDao.insertAll(newPatients)
+                caseDao.deleteCasesNotInList(effectiveUid, validRemoteIds.toList())
+            } else if (validRemoteIds.isEmpty()) {
+                caseDao.deleteCasesForUser(effectiveUid)
             }
         }
-        
-        // 3. Listen to remote updates reactively for real-time synchronization on user's private subcollection
-        val listeners = mutableListOf<ListenerRegistration>()
-        try {
-            if (uid.isNotEmpty() && uid != "anonymous") {
-                val userListener = firestore.collection("users").document(uid).collection("cases").addSnapshotListener { snapshot, error ->
-                    if (error != null) {
-                        Log.w("FIRESTORE_DEBUG", "User subcollection listen notice: ${error.code}")
-                        return@addSnapshotListener
-                    }
-                    if (snapshot != null) {
-                        Log.d("FIRESTORE_DEBUG", "Received ${snapshot.size()} cases from user subcollection")
-                        this@channelFlow.launch(Dispatchers.IO) {
-                            try {
-                                for (change in snapshot.documentChanges) {
-                                    val doc = change.document
-                                    if (change.type == com.google.firebase.firestore.DocumentChange.Type.REMOVED) {
-                                        caseDao.deleteCaseById(doc.id)
-                                        caseDao.deleteCase(uid, doc.id)
-                                    } else {
-                                        val rc = SavedCase.fromFirestoreDoc(doc)
-                                        if (!isCaseDeletedLocally(rc.id) && !isCaseDeletedLocally(rc.patientName)) {
-                                            val caseEntity = CaseEntity(
-                                                id = rc.id,
-                                                userId = uid,
-                                                patientId = rc.patientId,
-                                                patientName = rc.patientName,
-                                                title = "Assessment Finishing: ${rc.viewType.uppercase()}",
-                                                viewType = rc.viewType,
-                                                imagePath = rc.imagePath,
-                                                reportJson = rc.clinicalDataJson,
-                                                reportId = rc.id,
-                                                confidenceScore = rc.confidenceScore,
-                                                aboScore = rc.aboScore,
-                                                andrewsScore = rc.andrewsScore,
-                                                status = "Analyzed",
-                                                createdAt = rc.createdAt,
-                                                updatedAt = rc.createdAt
-                                            )
-                                            caseDao.insertCase(caseEntity)
-                                        }
-                                    }
-                                }
-                            } catch (ex: Exception) {
-                                Log.w(TAG, "Sync error in user subcollection listener: ${ex.message}")
-                            }
-                        }
-                    }
-                }
-                listeners.add(userListener)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start firestore snapshot listener", e)
-        }
-        
-        awaitClose {
-            localJob.cancel()
-            listeners.forEach { it.remove() }
-        }
-    }.flowOn(Dispatchers.IO)
+    }
 
     suspend fun saveFullCase(
         patient: Patient,
@@ -229,7 +395,8 @@ class CaseRepository(private val context: Context) {
         clinical: ClinicalReport,
         aiReport: AIReport
     ) {
-        val uid = userId()
+        val uid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: userId()
+        val currentUserEmail = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.email ?: ""
         val caseId = aiReport.case_id
         
         var downloadUrl = ""
@@ -253,7 +420,12 @@ class CaseRepository(private val context: Context) {
 
         val effectiveImageUrl = downloadUrl.ifEmpty { patient.imageUrls.firstOrNull() ?: "" }
 
-        val overallFinishingScore = (clinical.andrewsScore + clinical.archSymmetryScore + clinical.rootAngulationScore) / 3f
+        val overallFinishingScore = if (clinical.overallScore > 0f) clinical.overallScore else ((clinical.andrewsScore + clinical.archSymmetryScore + clinical.rootAngulationScore) / 3f)
+        val overallInt = Math.round(overallFinishingScore)
+        val aboInt = Math.round(clinical.aboScore)
+        val andrewsInt = Math.round(clinical.andrewsScore)
+        val alignInt = Math.round(clinical.archSymmetryScore)
+        val rootInt = Math.round(clinical.rootAngulationScore)
 
         // Save to Room DB first
         try {
@@ -280,8 +452,8 @@ class CaseRepository(private val context: Context) {
                 reportJson = clinical.toJson(),
                 reportId = caseId,
                 confidenceScore = clinical.confidenceScore,
-                aboScore = clinical.aboScore,
-                andrewsScore = clinical.andrewsScore,
+                aboScore = aboInt.toFloat(),
+                andrewsScore = andrewsInt.toFloat(),
                 status = "Analyzed",
                 createdAt = System.currentTimeMillis(),
                 updatedAt = System.currentTimeMillis()
@@ -318,6 +490,8 @@ class CaseRepository(private val context: Context) {
                 "uid" to uid,
                 "doctor_id" to uid,
                 "doctorId" to uid,
+                "email" to currentUserEmail,
+                "doctor_email" to currentUserEmail,
                 "doctor_name" to patient.doctorName,
                 "doctorName" to patient.doctorName,
                 "image_url" to effectiveImageUrl,
@@ -326,11 +500,13 @@ class CaseRepository(private val context: Context) {
                 "view_type" to clinical.viewType,
                 "viewType" to clinical.viewType,
                 "status" to "completed",
-                "finishing_score" to overallFinishingScore,
-                "overall_finishing_score" to overallFinishingScore,
-                "alignment_score" to clinical.archSymmetryScore,
-                "arch_symmetry_score" to clinical.archSymmetryScore,
-                "archSymmetryScore" to clinical.archSymmetryScore,
+                "overall_score" to overallInt,
+                "overallScore" to overallInt,
+                "finishing_score" to overallInt,
+                "overall_finishing_score" to overallInt,
+                "alignment_score" to alignInt,
+                "arch_symmetry_score" to alignInt,
+                "archSymmetryScore" to alignInt,
                 "confidence_score" to clinical.confidenceScore,
                 "confidenceScore" to clinical.confidenceScore,
                 "midline_deviation_mm" to clinical.midlineDiscrepancyMm,
@@ -339,13 +515,13 @@ class CaseRepository(private val context: Context) {
                 "overjetMm" to clinical.overjetMm,
                 "overbite_percent" to clinical.overbitePercent,
                 "overbitePercent" to clinical.overbitePercent,
-                "abo_score" to clinical.aboScore,
-                "aboScore" to clinical.aboScore,
-                "andrews_score" to clinical.andrewsScore,
-                "andrewsScore" to clinical.andrewsScore,
-                "root_angulation_score" to clinical.rootAngulationScore,
-                "rootAngulationScore" to clinical.rootAngulationScore,
-                "prediction" to "Orthodontic finishing analysis completed. Alignment: ${clinical.archSymmetryScore.toInt()}%, Andrews: ${clinical.andrewsScore.toInt()}%, Root Angulation: ${clinical.rootAngulationScore.toInt()}%.",
+                "abo_score" to aboInt,
+                "aboScore" to aboInt,
+                "andrews_score" to andrewsInt,
+                "andrewsScore" to andrewsInt,
+                "root_angulation_score" to rootInt,
+                "rootAngulationScore" to rootInt,
+                "prediction" to "Orthodontic finishing analysis completed. Alignment: $alignInt%, Andrews: $andrewsInt%, Root Angulation: $rootInt%.",
                 "recommendations" to clinical.recommendations,
                 "hasReport" to true,
                 "clinicalDataJson" to clinical.toJson(),
@@ -365,6 +541,13 @@ class CaseRepository(private val context: Context) {
                     .document(caseId)
                     .set(richCaseMap)
                     .await()
+
+                try {
+                    firestore.collection("users")
+                        .document(uid)
+                        .update("total_cases", com.google.firebase.firestore.FieldValue.increment(1))
+                        .await()
+                } catch (_: Exception) {}
             }
 
             // 2. Save in top-level cases collection
@@ -520,11 +703,13 @@ class CaseRepository(private val context: Context) {
                 val sc = SavedCase.fromFirestoreDoc(doc)
                 return ClinicalReport(
                     viewType = sc.viewType,
-                    confidenceScore = sc.confidenceScore,
-                    aboScore = sc.aboScore,
-                    archSymmetryScore = sc.alignmentScore,
-                    rootAngulationScore = sc.rootAngulationScore,
-                    andrewsScore = sc.andrewsScore,
+                    overallScore = sc.overallScore.toFloat(),
+                    confidenceScore = if (sc.confidenceScore > 1) sc.confidenceScore.toFloat() / 100f else sc.confidenceScore.toFloat(),
+                    aboScore = sc.aboScore.toFloat(),
+                    archSymmetryScore = sc.alignmentScore.toFloat(),
+                    alignmentScore = sc.alignmentScore.toFloat(),
+                    rootAngulationScore = sc.rootAngulationScore.toFloat(),
+                    andrewsScore = sc.andrewsScore.toFloat(),
                     overjetMm = (doc.getDouble("overjet_mm") ?: 2.4).toFloat(),
                     overbitePercent = (doc.getDouble("overbite_percent") ?: 25.0).toFloat(),
                     midlineDiscrepancyMm = (doc.getDouble("midline_deviation_mm") ?: 0.0).toFloat(),
@@ -689,19 +874,25 @@ class CaseRepository(private val context: Context) {
                 createdAt = it.createdAt
             )
         }
-        val score = if (aboScore > 0f) aboScore else (if (andrewsScore > 0f) andrewsScore else 0f)
+        val score = if (aboScore > 0f) aboScore.toInt() else (if (andrewsScore > 0f) andrewsScore.toInt() else 0)
+        val confInt = if (confidenceScore <= 1.0f) (confidenceScore * 100).toInt() else confidenceScore.toInt()
         return SavedCase(
             id = id,
+            caseId = id,
+            userId = userId,
             patientId = patientId,
             patientName = patientName,
             doctorName = "",
+            doctorId = userId,
+            imageUrl = imagePath,
             imagePath = imagePath,
             viewType = viewType,
-            confidenceScore = confidenceScore,
-            aboScore = aboScore,
-            andrewsScore = andrewsScore,
-            finishingScore = score,
-            overallFinishingScore = score,
+            confidenceScore = confInt,
+            aboScore = aboScore.toInt(),
+            andrewsScore = andrewsScore.toInt(),
+            overallScore = score,
+            finishingScore = score.toFloat(),
+            overallFinishingScore = score.toFloat(),
             createdAt = createdAt,
             hasReport = reportJson.isNotEmpty(),
             clinicalDataJson = reportJson,

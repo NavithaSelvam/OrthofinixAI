@@ -28,6 +28,8 @@ import com.example.orthofinixai.R
 import com.example.orthofinixai.ui.theme.*
 import com.example.orthofinixai.ui.components.MainBottomBar
 import com.example.orthofinixai.ui.navigation.Screen
+import com.example.orthofinixai.ui.viewmodel.CaseViewModel
+import com.example.orthofinixai.ui.viewmodel.CaseListState
 import com.example.orthofinixai.ui.viewmodel.PatientViewModel
 import com.example.orthofinixai.ui.viewmodel.PatientState
 import com.example.orthofinixai.ui.viewmodel.AuthViewModel
@@ -49,18 +51,32 @@ fun DashboardScreen(
     onSeeAllClick: () -> Unit,
     onBottomNav: (String) -> Unit = {},
     onDemoClick: () -> Unit = {},
-    viewModel: PatientViewModel = viewModel(),
+    caseViewModel: CaseViewModel = viewModel(),
     authViewModel: AuthViewModel = viewModel()
 ) {
-    val uiState by viewModel.uiState.collectAsState()
+    val caseState by caseViewModel.uiState.collectAsState()
     val authState by authViewModel.uiState.collectAsState()
     val context = LocalContext.current
 
     var showAccuracyDialog by remember { mutableStateOf(false) }
     var caseToDelete by remember { mutableStateOf<SavedCase?>(null) }
 
-    LaunchedEffect(Unit) {
-        viewModel.fetchPatients()
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                caseViewModel.refresh()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
+    val cases = when (val s = caseState) {
+        is CaseListState.Success -> s.cases
+        else -> emptyList()
     }
 
     if (caseToDelete != null) {
@@ -72,7 +88,7 @@ fun DashboardScreen(
                 TextButton(onClick = {
                     val targetCaseId = caseToDelete!!.id
                     caseToDelete = null
-                    viewModel.deleteCase(targetCaseId)
+                    caseViewModel.deleteCase(targetCaseId)
                 }) { Text("Delete", color = StatusError, fontWeight = FontWeight.Bold) }
             },
             dismissButton = {
@@ -125,6 +141,9 @@ fun DashboardScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = { caseViewModel.refresh() }) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Sync", tint = ClinicalSkyBlue)
+                    }
                     IconButton(onClick = onNotificationsClick) {
                         Icon(Icons.Default.Notifications, null, tint = ClinicalSlate)
                     }
@@ -176,8 +195,7 @@ fun DashboardScreen(
                     Spacer(modifier = Modifier.height(20.dp))
                     
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        val totalCases = (uiState as? PatientState.Success)?.savedCases?.size
-                            ?: (uiState as? PatientState.Success)?.patients?.size ?: 0
+                        val totalCases = cases.size
                         
                         QuickStatCard(
                             label = "ACTIVE CASES", 
@@ -217,32 +235,22 @@ fun DashboardScreen(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                when (val state = uiState) {
-                    is PatientState.Loading -> {
-                        Box(modifier = Modifier.fillMaxWidth().height(200.dp), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(color = ClinicalSkyBlue)
-                        }
+                if (caseState is CaseListState.Loading && cases.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxWidth().height(200.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(color = ClinicalSkyBlue)
                     }
-                    is PatientState.Success -> {
-                        val cases = state.savedCases
-                        if (cases.isEmpty()) {
-                            EmptyDashboardState(onDemoClick = onDemoClick)
-                        } else {
-                            cases.take(5).forEach { c ->
-                                ClinicalCaseItem(
-                                    case = c, 
-                                    onClick = onCaseClick, 
-                                    onDeleteCase = { caseToDelete = c },
-                                    context = context
-                                )
-                                Spacer(modifier = Modifier.height(12.dp))
-                            }
-                        }
+                } else if (cases.isEmpty()) {
+                    EmptyDashboardState(onDemoClick = onDemoClick)
+                } else {
+                    cases.take(5).forEach { c ->
+                        ClinicalCaseItem(
+                            case = c, 
+                            onClick = onCaseClick, 
+                            onDeleteCase = { caseToDelete = c },
+                            context = context
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
                     }
-                    is PatientState.Error -> {
-                        ErrorMessage("Unable to load cases. Data is stored on-device.")
-                    }
-                    else -> {}
                 }
             }
         }
@@ -288,78 +296,95 @@ fun ClinicalCaseItem(
         shape = RoundedCornerShape(12.dp)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
+            val overallScore = if (clinicalData != null && clinicalData.overallScore > 0f) {
+                clinicalData.overallScore.toInt()
+            } else if (case.finishingScore > 0f) {
+                case.finishingScore.toInt()
+            } else {
+                case.displayScore.toInt()
+            }
+
+            val aboVal = if (clinicalData != null && clinicalData.aboScore > 0f) clinicalData.aboScore.toInt() else case.aboScore.toInt()
+            val andrewsVal = if (clinicalData != null && clinicalData.andrewsScore > 0f) clinicalData.andrewsScore.toInt() else case.andrewsScore.toInt()
+
             Row(verticalAlignment = Alignment.CenterVertically) {
                 // Thumbnail
                 Box(
-                    modifier = Modifier.size(64.dp).clip(RoundedCornerShape(12.dp)).background(BackgroundClinical),
+                    modifier = Modifier.size(56.dp).clip(RoundedCornerShape(12.dp)).background(ClinicalSkyBlue.copy(alpha = 0.12f)),
                     contentAlignment = Alignment.Center
                 ) {
                     if (case.imagePath.isNotEmpty()) {
-                        // In a real app we'd load image with Coil, here we just show placeholder
-                        Icon(Icons.Default.Person, null, tint = ClinicalDeepNavy, modifier = Modifier.size(32.dp))
+                        Icon(Icons.Default.Visibility, null, tint = ClinicalSkyBlue, modifier = Modifier.size(28.dp))
                     } else {
-                        Icon(Icons.Default.Assignment, null, tint = ClinicalDeepNavy, modifier = Modifier.size(32.dp))
+                        Icon(Icons.Default.Assignment, null, tint = ClinicalSkyBlue, modifier = Modifier.size(28.dp))
                     }
                 }
                 Spacer(modifier = Modifier.width(16.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(case.patientName, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = ClinicalDeepNavy)
-                    val overallScore = if (clinicalData != null) {
-                        (clinicalData.andrewsScore + clinicalData.archSymmetryScore + clinicalData.rootAngulationScore) / 3f
-                    } else {
-                        case.displayScore
-                    }
-                    Text("Overall Score: ${overallScore.toInt()}%", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = ClinicalEmerald)
+                    Text(case.patientName, fontWeight = FontWeight.Bold, fontSize = 17.sp, color = ClinicalDeepNavy)
+                    Text("Overall Score: $overallScore%", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = ClinicalEmerald)
                 }
                 Box(
-                    modifier = Modifier.clip(CircleShape).background(ClinicalEmerald.copy(alpha = 0.1f)).padding(horizontal = 12.dp, vertical = 4.dp)
+                    modifier = Modifier.clip(CircleShape).background(ClinicalEmerald.copy(alpha = 0.1f)).padding(horizontal = 10.dp, vertical = 4.dp)
                 ) {
                     Text("ANALYZED", color = ClinicalEmerald, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                 }
             }
 
-            if (clinicalData != null) {
-                Spacer(modifier = Modifier.height(16.dp))
-                HorizontalDivider(color = BorderClinical)
-                Spacer(modifier = Modifier.height(8.dp))
-                
-                // Scores Row
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    ScoreBadge("ABO", "${clinicalData.aboScore.toInt()}")
-                    ScoreBadge("Andrews", "${clinicalData.andrewsScore.toInt()}")
-                    ScoreBadge("Roling", clinicalData.rolingResult?.overallScore?.toInt()?.toString() ?: "N/A")
-                    ScoreBadge("Raleigh", clinicalData.raleighWilliamsResult?.overallScore?.toInt()?.toString() ?: "N/A")
-                }
+            Spacer(modifier = Modifier.height(12.dp))
+            HorizontalDivider(color = BorderClinical)
+            Spacer(modifier = Modifier.height(8.dp))
+            
+            // Scores Row
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                ScoreBadge("ABO", "$aboVal%")
+                ScoreBadge("Andrews", "$andrewsVal%")
+                ScoreBadge("Confidence", "${if (case.confidenceScore <= 1) case.confidenceScore * 100 else case.confidenceScore}%")
+                ScoreBadge("Status", "Complete")
+            }
 
+            if (clinicalData != null) {
                 Spacer(modifier = Modifier.height(12.dp))
                 Text("Measurements:", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = ClinicalDeepNavy)
                 Text("Overjet: ${clinicalData.overjetMm}mm | Overbite: ${clinicalData.overbitePercent}% | Symmetry: ${clinicalData.archSymmetryScore}%", fontSize = 12.sp, color = ClinicalSlate)
                 
                 Spacer(modifier = Modifier.height(8.dp))
                 Text("Top Recommendation:", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = ClinicalDeepNavy)
-                val rec = clinicalData.recommendations.firstOrNull() ?: clinicalData.structuredRecommendations.firstOrNull()?.clinicalActionStep ?: "No recommendations"
+                val rec = clinicalData.recommendations.firstOrNull() ?: clinicalData.structuredRecommendations.firstOrNull()?.clinicalActionStep ?: "Maintain optimal arch alignment."
                 Text(rec, fontSize = 12.sp, color = ClinicalSlate, maxLines = 1)
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(12.dp))
             HorizontalDivider(color = BorderClinical)
             Spacer(modifier = Modifier.height(8.dp))
             
             // Buttons Row
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = { onClick(case.id) }) {
-                    Text("View Report", color = ClinicalSkyBlue, fontWeight = FontWeight.Bold)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                if (case.imagePath.isNotEmpty()) {
+                    TextButton(onClick = { onClick(case.id) }) {
+                        Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(14.dp), tint = ClinicalSkyBlue)
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("OPG Scan", color = ClinicalSkyBlue, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                } else {
+                    Spacer(modifier = Modifier.width(1.dp))
                 }
-                Spacer(modifier = Modifier.width(4.dp))
-                IconButton(onClick = { PdfGenerator.generateAndSharePdf(context, case) }) {
-                    Icon(Icons.Default.Share, contentDescription = "Share PDF", tint = ClinicalSkyBlue)
-                }
-                IconButton(onClick = { PdfGenerator.generateAndSharePdf(context, case) }) {
-                    Icon(Icons.Default.PictureAsPdf, contentDescription = "Download PDF", tint = ClinicalDeepNavy)
-                }
-                if (onDeleteCase != null) {
-                    IconButton(onClick = { onDeleteCase(case.id) }) {
-                        Icon(Icons.Default.Delete, contentDescription = "Delete Case", tint = StatusError)
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { onClick(case.id) }) {
+                        Text("View Report", color = ClinicalSkyBlue, fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(modifier = Modifier.width(4.dp))
+                    IconButton(onClick = { PdfGenerator.generateAndSharePdf(context, case) }) {
+                        Icon(Icons.Default.Share, contentDescription = "Share PDF", tint = ClinicalSkyBlue)
+                    }
+                    IconButton(onClick = { PdfGenerator.generateAndSharePdf(context, case) }) {
+                        Icon(Icons.Default.PictureAsPdf, contentDescription = "Download PDF", tint = ClinicalDeepNavy)
+                    }
+                    if (onDeleteCase != null) {
+                        IconButton(onClick = { onDeleteCase(case.id) }) {
+                            Icon(Icons.Default.Delete, contentDescription = "Delete Case", tint = StatusError)
+                        }
                     }
                 }
             }

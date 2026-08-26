@@ -242,13 +242,19 @@ class AnalysisRepository(private val context: Context) {
                 }
             }
 
+            val rawOverall = if (analysis.overallScore > 0f) analysis.overallScore 
+                else if (analysis.overall_finishing_score > 0f) analysis.overall_finishing_score 
+                else analysis.finishing_score
+
             val clinical = ClinicalReport(
                 viewType = analysis.view_type,
-                confidenceScore = analysis.confidence_score,
-                aboScore = analysis.abo_score,
-                archSymmetryScore = analysis.alignment_score,
-                rootAngulationScore = analysis.root_angulation_score,
-                andrewsScore = analysis.andrews_score,
+                overallScore = rawOverall,
+                confidenceScore = if (analysis.confidence_score > 1.0f) analysis.confidence_score / 100f else analysis.confidence_score,
+                aboScore = if (analysis.abo_score > 0f) analysis.abo_score else rawOverall,
+                archSymmetryScore = if (analysis.alignment_score > 0f) analysis.alignment_score else rawOverall,
+                alignmentScore = if (analysis.alignment_score > 0f) analysis.alignment_score else rawOverall,
+                rootAngulationScore = if (analysis.root_angulation_score > 0f) analysis.root_angulation_score else rawOverall,
+                andrewsScore = if (analysis.andrews_score > 0f) analysis.andrews_score else rawOverall,
                 andrewsKeys = parsedAndrewsKeys, 
                 overjetMm = overjetMmVal,
                 overbitePercent = overbitePercentVal,
@@ -446,20 +452,20 @@ class AnalysisRepository(private val context: Context) {
 
             // 5. Fallback: If local Room savedCase exists, construct AIReport directly from saved entity
             if (savedCase != null) {
-                val score = savedCase.displayScore
+                val score = savedCase.displayScore.toFloat()
                 val rep = AIReport(
                     id = savedCase.id,
                     case_id = savedCase.id,
-                    abo_score = savedCase.aboScore.takeIf { it > 0 } ?: score,
+                    abo_score = if (savedCase.aboScore > 0) savedCase.aboScore.toFloat() else score,
                     arch_symmetry_score = score,
                     root_angulation_score = score,
-                    andrews_score = savedCase.andrewsScore.takeIf { it > 0 } ?: score,
+                    andrews_score = if (savedCase.andrewsScore > 0) savedCase.andrewsScore.toFloat() else score,
                     recommendations = listOf(
                         "Clinical analysis verified for patient ${savedCase.patientName}.",
                         "Verify canine intercuspation and root parallelism on final debond."
                     ),
                     created_at = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US).format(java.util.Date(savedCase.createdAt)),
-                    confidence_score = savedCase.confidenceScore.takeIf { it > 0 } ?: 0.95f,
+                    confidence_score = if (savedCase.confidenceScore > 0) (if (savedCase.confidenceScore > 1) savedCase.confidenceScore / 100f else savedCase.confidenceScore.toFloat()) else 0.95f,
                     overjet_mm = 2.4f,
                     overbite_percent = 25f,
                     midline_discrepancy_mm = 0f,

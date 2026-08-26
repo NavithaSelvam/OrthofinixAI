@@ -77,7 +77,7 @@ def upload_clinical_image(
         raise ValueError("file_bytes cannot be empty")
 
     clean_filename = filename if filename else f"{uuid.uuid4()}.jpg"
-    clean_uid = uid if uid else "anonymous_doctor"
+    clean_uid = uid.strip() if (uid and uid.strip()) else "user"
     blob_path = f"cases/{clean_uid}/{clean_filename}"
 
     try:

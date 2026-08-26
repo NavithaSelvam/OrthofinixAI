@@ -307,7 +307,7 @@ fun ResultHeaderCard(report: com.example.orthofinixai.data.model.AIReport?) {
     val overallScore = report?.overallScore?.takeIf { it > 0f }
         ?: report?.overall_finishing_score?.takeIf { it > 0f }
         ?: report?.let { (it.abo_score + it.arch_symmetry_score + it.root_angulation_score + it.andrews_score) / 4 }
-        ?: 88.5f
+        ?: 0f
     
     Box(
         modifier = Modifier

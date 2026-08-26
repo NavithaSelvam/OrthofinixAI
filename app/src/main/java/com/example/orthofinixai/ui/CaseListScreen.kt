@@ -9,11 +9,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.FolderOpen
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -44,42 +40,32 @@ fun CaseListScreen(
     onCaseClick: (String) -> Unit,
     onNewCaseClick: () -> Unit = {},
     onBottomNav: (String) -> Unit = {},
-    viewModel: PatientViewModel = viewModel(),
     caseViewModel: CaseViewModel = viewModel()
 ) {
     val caseState by caseViewModel.uiState.collectAsState()
-    val patientState by viewModel.uiState.collectAsState()
     var searchQuery by remember { mutableStateOf("") }
     var caseToDelete by remember { mutableStateOf<SavedCase?>(null) }
 
-    LaunchedEffect(Unit) {
-        viewModel.fetchPatients()
-        caseViewModel.loadCases()
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                caseViewModel.refresh()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
     }
 
     LaunchedEffect(searchQuery) {
         caseViewModel.search(searchQuery)
     }
 
-    // Merge cases from both CaseViewModel and PatientViewModel to ensure all records appear
-    val allCases = remember(caseState, patientState, searchQuery) {
-        val listFromCase = when (val s = caseState) {
-            is CaseListState.Success -> s.cases
-            else -> emptyList()
-        }
-        val listFromPatient = when (val s = patientState) {
-            is PatientState.Success -> s.savedCases
-            else -> emptyList()
-        }
-        val merged = (listFromCase + listFromPatient).distinctBy { it.id }
-        if (searchQuery.isBlank()) {
-            merged
-        } else {
-            merged.filter {
-                it.patientName.contains(searchQuery, ignoreCase = true) ||
-                it.id.contains(searchQuery, ignoreCase = true)
-            }
-        }
+    val allCases = when (val s = caseState) {
+        is CaseListState.Success -> s.cases
+        else -> emptyList()
     }
 
     val isLoading = caseState is CaseListState.Loading && allCases.isEmpty()
@@ -94,7 +80,6 @@ fun CaseListScreen(
                     val targetCaseId = caseToDelete!!.id
                     caseToDelete = null
                     caseViewModel.deleteCase(targetCaseId)
-                    viewModel.deleteCase(targetCaseId)
                 }) { Text("Delete", color = StatusError, fontWeight = FontWeight.Bold) }
             },
             dismissButton = {
@@ -110,8 +95,7 @@ fun CaseListScreen(
                 onBack = onBack,
                 actions = {
                     IconButton(onClick = {
-                        viewModel.fetchPatients()
-                        caseViewModel.loadCases()
+                        caseViewModel.refresh()
                     }) {
                         Icon(Icons.Default.Refresh, contentDescription = "Sync", tint = ClinicalSkyBlue)
                     }
@@ -202,8 +186,7 @@ fun CaseListScreen(
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             OutlinedButton(
                                 onClick = {
-                                    viewModel.fetchPatients()
-                                    caseViewModel.loadCases()
+                                    caseViewModel.refresh()
                                 },
                                 shape = RoundedCornerShape(12.dp),
                                 border = androidx.compose.foundation.BorderStroke(1.dp, BorderClinical)
@@ -257,7 +240,9 @@ fun CaseListScreen(
 private fun SavedCaseCard(case: SavedCase, onOpen: () -> Unit, onDelete: () -> Unit) {
     val dateStr = SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault()).format(Date(case.createdAt))
     val initial = case.patientName.take(1).uppercase()
-    val score = case.displayScore.toInt()
+    val overallScore = if (case.finishingScore > 0) case.finishingScore.toInt() else case.displayScore.toInt()
+    val aboScore = case.aboScore.toInt()
+    val andrewsScore = case.andrewsScore.toInt()
 
     Card(
         onClick = onOpen,
@@ -267,91 +252,106 @@ private fun SavedCaseCard(case: SavedCase, onOpen: () -> Unit, onDelete: () -> U
         shape = RoundedCornerShape(16.dp),
         border = androidx.compose.foundation.BorderStroke(1.dp, BorderClinical)
     ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // Patient Avatar
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(ClinicalSkyBlue.copy(alpha = 0.12f)),
-                contentAlignment = Alignment.Center
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = initial,
-                    color = ClinicalSkyBlue,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp
-                )
-            }
-
-            Spacer(modifier = Modifier.width(14.dp))
-
-            Column(modifier = Modifier.weight(1f)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                // Patient Avatar
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(ClinicalSkyBlue.copy(alpha = 0.12f)),
+                    contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = case.patientName,
+                        text = initial,
+                        color = ClinicalSkyBlue,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp,
-                        color = ClinicalDeepNavy,
-                        maxLines = 1
+                        fontSize = 20.sp
                     )
-                    
-                    Box(
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .background(ClinicalEmerald.copy(alpha = 0.12f))
-                            .padding(horizontal = 8.dp, vertical = 2.dp)
+                }
+
+                Spacer(modifier = Modifier.width(14.dp))
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "$score%",
-                            color = ClinicalEmerald,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
+                            text = case.patientName,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            color = ClinicalDeepNavy,
+                            maxLines = 1
                         )
+                        
+                        Box(
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .background(ClinicalEmerald.copy(alpha = 0.12f))
+                                .padding(horizontal = 8.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = "$overallScore%",
+                                color = ClinicalEmerald,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
-                }
 
-                Spacer(modifier = Modifier.height(2.dp))
-                
-                Text(
-                    text = "Case #${case.id.takeLast(8)} • ${case.viewType.uppercase()}", 
-                    fontSize = 12.sp, 
-                    color = ClinicalSlate
-                )
-                
-                Spacer(modifier = Modifier.height(4.dp))
-                
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = dateStr, 
-                        fontSize = 11.sp, 
-                        color = ClinicalSlate.copy(alpha = 0.7f)
-                    )
+                    Spacer(modifier = Modifier.height(2.dp))
                     
                     Text(
-                        text = "Confidence: ${(case.confidenceScore * 100).toInt()}%",
-                        fontSize = 11.sp,
-                        color = ClinicalEmerald,
-                        fontWeight = FontWeight.SemiBold
+                        text = "Case #${case.id.takeLast(8)} • ${case.viewType.uppercase()}", 
+                        fontSize = 12.sp, 
+                        color = ClinicalSlate
                     )
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                IconButton(onClick = onDelete) {
+                    Icon(Icons.Default.Delete, contentDescription = "Delete", tint = StatusError.copy(alpha = 0.7f), modifier = Modifier.size(20.dp))
                 }
             }
 
-            Spacer(modifier = Modifier.width(8.dp))
+            Spacer(modifier = Modifier.height(12.dp))
+            HorizontalDivider(color = BorderClinical.copy(alpha = 0.5f))
+            Spacer(modifier = Modifier.height(8.dp))
 
-            IconButton(onClick = onDelete) {
-                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = StatusError.copy(alpha = 0.7f), modifier = Modifier.size(20.dp))
+            // Score Metrics Row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Overall: $overallScore%", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = ClinicalEmerald)
+                Text("ABO: $aboScore%", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = ClinicalDeepNavy)
+                Text("Andrews: $andrewsScore%", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = ClinicalDeepNavy)
+                Text(dateStr, fontSize = 11.sp, color = ClinicalSlate.copy(alpha = 0.7f))
+            }
+
+            // OPG View Button (Dynamic - Show ONLY if image_url or imagePath is present)
+            if (case.imagePath.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(
+                        onClick = onOpen,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                    ) {
+                        Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(14.dp), tint = ClinicalSkyBlue)
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("View OPG Scan", color = ClinicalSkyBlue, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
             }
         }
     }

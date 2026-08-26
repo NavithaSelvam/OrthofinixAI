@@ -26,6 +26,7 @@ fun OrthofinixNavGraph(
 ) {
     val sharedCaseViewModel: SharedCaseViewModel = viewModel()
     val patientViewModel: PatientViewModel = viewModel()
+    val caseViewModel: CaseViewModel = viewModel()
     val analysisViewModel: AnalysisViewModel = viewModel()
     val authViewModel: AuthViewModel = viewModel()
 
@@ -92,7 +93,7 @@ fun OrthofinixNavGraph(
                     analysisViewModel.loadDemoReport()
                     navController.navigate(Screen.AssessmentSummary.route)
                 },
-                viewModel = patientViewModel,
+                caseViewModel = caseViewModel,
                 authViewModel = authViewModel
             )
         }
@@ -107,8 +108,7 @@ fun OrthofinixNavGraph(
                     navController.navigate(Screen.AddCasePatientInfo.route)
                 },
                 onBottomNav = { navController.navigateMainTab(it) },
-                viewModel = patientViewModel,
-                caseViewModel = viewModel()
+                caseViewModel = caseViewModel
             )
         }
         composable(Screen.Notifications.route) {

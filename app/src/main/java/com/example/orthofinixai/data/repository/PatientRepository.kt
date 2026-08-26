@@ -11,8 +11,10 @@ import com.example.orthofinixai.data.model.PatientCreate
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -30,32 +32,23 @@ class PatientRepository(private val context: Context) {
     private val firestore by lazy { FirebaseFirestore.getInstance() }
     private val authRepository by lazy { AuthRepository(context) }
 
-    fun getPatients(): Flow<Result<List<Patient>>> = channelFlow {
-        val userId = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: AuthRepository.getCurrentUserId()
-        
-        // 1. Observe local Room DB
-        val localJob = launch(Dispatchers.IO) {
-            try {
-                patientDao.getPatientsForUser(userId).collect { entities ->
-                    val mapped = entities.map { it.toPatient() }
-                    send(Result.success(mapped))
-                }
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e(TAG, "Error collecting local patients", e)
-            }
-        }
+    fun getPatientsFlow(userId: String = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: AuthRepository.getCurrentUserId()): Flow<List<Patient>> {
+        return patientDao.getPatientsForUser(userId).map { entities ->
+            entities.map { it.toPatient() }
+        }.flowOn(Dispatchers.IO)
+    }
 
-        // 2. Fetch remote patients from FastAPI Backend API
-        launch(Dispatchers.IO) {
+    fun getPatients(): Flow<Result<List<Patient>>> = getPatientsFlow().map { Result.success(it) }
+
+    suspend fun syncPatientsFromCloud(userId: String = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: AuthRepository.getCurrentUserId()) {
+        withContext(Dispatchers.IO) {
             try {
                 val token = authRepository.getUserIdToken()
                 if (!token.isNullOrEmpty()) {
                     val api = OrthofinixApi.create()
                     val apiPatients = api.getPatients("Bearer $token")
-                    apiPatients.forEach { bp ->
-                        val entity = PatientEntity(
+                    val entities = apiPatients.map { bp ->
+                        PatientEntity(
                             id = bp.id,
                             userId = bp.doctorId ?: userId,
                             name = bp.name,
@@ -65,17 +58,14 @@ class PatientRepository(private val context: Context) {
                             notes = "",
                             createdAt = System.currentTimeMillis()
                         )
-                        patientDao.insertPatient(entity)
                     }
+                    patientDao.insertAll(entities)
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Notice fetching patients from API: ${e.message}")
             }
         }
-        awaitClose {
-            localJob.cancel()
-        }
-    }.flowOn(Dispatchers.IO)
+    }
 
     fun createPatient(patient: PatientCreate): Flow<Result<Patient>> = flow {
         val result = try {
