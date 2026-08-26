@@ -66,130 +66,97 @@ class CaseRepository(private val context: Context) {
 
     fun startRealtimeSync(uid: String = userId()) {
         val effectiveUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: uid
+        val currentUserEmail = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.email ?: ""
         if (effectiveUid.isEmpty() || effectiveUid == "anonymous") return
 
         try {
-            snapshotRegistration?.remove()
-            snapshotRegistration = firestore.collection("users")
-                .document(effectiveUid)
-                .collection("cases")
-                .addSnapshotListener { snapshot, error ->
-                    if (error != null) {
-                        Log.w(TAG, "Firestore real-time listener notice: ${error.message}")
-                        return@addSnapshotListener
-                    }
-                    if (snapshot != null) {
-                        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
-                            for (change in snapshot.documentChanges) {
-                                val doc = change.document
-                                val caseId = doc.id
-                                when (change.type) {
-                                    com.google.firebase.firestore.DocumentChange.Type.REMOVED -> {
-                                        markCaseAsDeletedLocally(caseId)
-                                        caseDao.deleteCaseById(caseId)
-                                        caseDao.deleteCase(effectiveUid, caseId)
-                                    }
-                                    com.google.firebase.firestore.DocumentChange.Type.ADDED,
-                                    com.google.firebase.firestore.DocumentChange.Type.MODIFIED -> {
-                                        if (!isCaseDeletedLocally(caseId)) {
-                                            val sc = SavedCase.fromFirestoreDoc(doc)
-                                            val caseEntity = CaseEntity(
-                                                id = sc.id,
-                                                userId = effectiveUid,
-                                                patientId = sc.patientId,
-                                                patientName = sc.patientName,
-                                                title = "Assessment Finishing: ${sc.viewType.uppercase()}",
-                                                viewType = sc.viewType,
-                                                imagePath = sc.imagePath,
-                                                reportJson = sc.clinicalDataJson,
-                                                reportId = sc.id,
-                                                confidenceScore = if (sc.confidenceScore > 1) sc.confidenceScore.toFloat() / 100f else sc.confidenceScore.toFloat(),
-                                                aboScore = sc.aboScore.toFloat(),
-                                                andrewsScore = sc.andrewsScore.toFloat(),
-                                                status = "Analyzed",
-                                                createdAt = sc.createdAt,
-                                                updatedAt = sc.createdAt
-                                            )
-                                            val patientEntity = PatientEntity(
-                                                id = sc.patientId,
-                                                userId = effectiveUid,
-                                                name = sc.patientName,
-                                                age = 25,
-                                                gender = "Unknown",
-                                                phone = "",
-                                                notes = "",
-                                                createdAt = sc.createdAt
-                                            )
-                                            patientDao.insertPatient(patientEntity)
-                                            caseDao.insertCase(caseEntity)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
             rootSnapshotRegistration?.remove()
             rootSnapshotRegistration = firestore.collection("cases")
-                .whereEqualTo("user_id", effectiveUid)
                 .addSnapshotListener { snapshot, error ->
                     if (error != null) {
+                        Log.e("CASE_SYNC", "Firestore root cases query error: ${error.message}")
                         return@addSnapshotListener
                     }
                     if (snapshot != null) {
-                        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
-                            for (change in snapshot.documentChanges) {
-                                val doc = change.document
-                                val caseId = doc.id
-                                when (change.type) {
-                                    com.google.firebase.firestore.DocumentChange.Type.REMOVED -> {
-                                        markCaseAsDeletedLocally(caseId)
-                                        caseDao.deleteCaseById(caseId)
-                                        caseDao.deleteCase(effectiveUid, caseId)
-                                    }
-                                    com.google.firebase.firestore.DocumentChange.Type.ADDED,
-                                    com.google.firebase.firestore.DocumentChange.Type.MODIFIED -> {
-                                        if (!isCaseDeletedLocally(caseId)) {
-                                            val sc = SavedCase.fromFirestoreDoc(doc)
-                                            val caseEntity = CaseEntity(
-                                                id = sc.id,
-                                                userId = effectiveUid,
-                                                patientId = sc.patientId,
-                                                patientName = sc.patientName,
-                                                title = "Assessment Finishing: ${sc.viewType.uppercase()}",
-                                                viewType = sc.viewType,
-                                                imagePath = sc.imagePath,
-                                                reportJson = sc.clinicalDataJson,
-                                                reportId = sc.id,
-                                                confidenceScore = if (sc.confidenceScore > 1) sc.confidenceScore.toFloat() / 100f else sc.confidenceScore.toFloat(),
-                                                aboScore = sc.aboScore.toFloat(),
-                                                andrewsScore = sc.andrewsScore.toFloat(),
-                                                status = "Analyzed",
-                                                createdAt = sc.createdAt,
-                                                updatedAt = sc.createdAt
-                                            )
-                                            val patientEntity = PatientEntity(
-                                                id = sc.patientId,
-                                                userId = effectiveUid,
-                                                name = sc.patientName,
-                                                age = 25,
-                                                gender = "Unknown",
-                                                phone = "",
-                                                notes = "",
-                                                createdAt = sc.createdAt
-                                            )
-                                            patientDao.insertPatient(patientEntity)
-                                            caseDao.insertCase(caseEntity)
-                                        }
-                                    }
-                                }
+                        val parsedEntities = mutableListOf<CaseEntity>()
+                        val parsedPatients = mutableListOf<PatientEntity>()
+                        for (doc in snapshot.documents) {
+                            val data = doc.data ?: continue
+                            val docUserId = data["user_id"] as? String ?: data["doctorId"] as? String ?: data["userId"] as? String ?: ""
+                            val docEmail = data["email"] as? String ?: data["doctor_email"] as? String ?: ""
+                            
+                            // Match by UID, email, or include if matching authenticated doctor
+                            if (effectiveUid.isNotEmpty() && docUserId.isNotEmpty() && docUserId != effectiveUid && (currentUserEmail.isEmpty() || docEmail != currentUserEmail)) {
+                                continue
+                            }
+                            
+                            val pName = data["patient_name"] as? String 
+                                ?: data["patientName"] as? String 
+                                ?: data["name"] as? String 
+                                ?: "Patient ${doc.id.takeLast(4)}"
+                            val fScore = (data["overall_score"] as? Number)?.toFloat() 
+                                ?: (data["overallScore"] as? Number)?.toFloat() 
+                                ?: (data["finishing_score"] as? Number)?.toFloat() 
+                                ?: 0f
+                            val abo = (data["abo_score"] as? Number)?.toFloat() 
+                                ?: (data["aboScore"] as? Number)?.toFloat() 
+                                ?: 0f
+                            val andrews = (data["andrews_score"] as? Number)?.toFloat() 
+                                ?: (data["andrewsScore"] as? Number)?.toFloat() 
+                                ?: 0f
+                            val conf = (data["confidence_score"] as? Number)?.toFloat() 
+                                ?: (data["confidenceScore"] as? Number)?.toFloat() 
+                                ?: 0.95f
+                            val img = data["image_url"] as? String 
+                                ?: data["imageUrl"] as? String 
+                                ?: data["storage_url"] as? String 
+                                ?: data["imagePath"] as? String 
+                                ?: ""
+                            val vType = data["view_type"] as? String ?: data["viewType"] as? String ?: "opg"
+                            val cId = data["case_id"] as? String ?: data["caseId"] as? String ?: doc.id
+
+                            parsedEntities.add(
+                                CaseEntity(
+                                    id = cId,
+                                    userId = if (docUserId.isNotEmpty()) docUserId else effectiveUid,
+                                    patientId = cId,
+                                    patientName = pName,
+                                    title = "Assessment Finishing: ${vType.uppercase()}",
+                                    viewType = vType,
+                                    imagePath = img,
+                                    reportJson = "",
+                                    reportId = cId,
+                                    confidenceScore = if (conf > 1f) conf / 100f else conf,
+                                    aboScore = abo,
+                                    andrewsScore = andrews,
+                                    status = data["status"] as? String ?: "ANALYZED",
+                                    createdAt = System.currentTimeMillis(),
+                                    updatedAt = System.currentTimeMillis()
+                                )
+                            )
+                            parsedPatients.add(
+                                PatientEntity(
+                                    id = cId,
+                                    userId = if (docUserId.isNotEmpty()) docUserId else effectiveUid,
+                                    name = pName,
+                                    age = 25,
+                                    gender = "Unknown",
+                                    phone = "",
+                                    notes = "",
+                                    createdAt = System.currentTimeMillis()
+                                )
+                            )
+                        }
+                        if (parsedEntities.isNotEmpty()) {
+                            kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+                                caseDao.insertAll(parsedEntities)
+                                patientDao.insertAll(parsedPatients)
                             }
                         }
                     }
                 }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to start real-time sync listener: ${e.message}")
+            Log.w(TAG, "Failed to start real-time root cases sync listener: ${e.message}")
         }
     }
 
