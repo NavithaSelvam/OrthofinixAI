@@ -48,7 +48,8 @@ export default function AIProcessingPage() {
         // Step 2: Axios upload OPG file
         if (!active) return;
         const reqId = `web_ai_${Date.now()}`;
-        console.log(`[WEB UPLOAD]\nrequest ID: ${reqId}\nUID: ${activeUid}\npatient ID: ${patientId || 'new'}\npatient name: ${patientName || 'Patient'}\nview type: opg`);
+        const activePatId = sessionStorage.getItem('current_patient_case_id') || `pat_${(patientName || 'patient').toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+        console.log(`[WEB UPLOAD]\nrequest ID: ${reqId}\nUID: ${activeUid}\npatient ID: ${activePatId}\npatient name: ${patientName || 'Patient'}\nview type: opg`);
         setProgressText('Uploading image to secure server...');
         const { data: uploadRes } = await analysisApi.upload(opgPhoto, (percent) => {
           if (active) {
