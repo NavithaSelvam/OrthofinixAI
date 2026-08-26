@@ -1,6 +1,6 @@
-from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any, Tuple
-from datetime import datetime
+from pydantic import BaseModel, Field, field_validator
+from typing import Optional, List, Dict, Any, Tuple, Union
+from datetime import datetime, timezone
 
 class UserInfo(BaseModel):
     uid: str
@@ -53,6 +53,8 @@ class ToothFindingItem(BaseModel):
     status: str = "Aligned"
     issues: List[str] = Field(default_factory=list)
 
+from pydantic import BaseModel, Field, field_validator
+
 class AnalysisHistoryItem(BaseModel):
     id: str
     patient_name: str
@@ -65,9 +67,19 @@ class AnalysisHistoryItem(BaseModel):
     alignment_score: Optional[float] = None
     teeth: Optional[List[Dict[str, Any]]] = None
     teeth_data: Optional[List[Dict[str, Any]]] = None
-    created_at: Optional[str] = None
+    created_at: Optional[Any] = None
     image_url: Optional[str] = None
     user_id: Optional[str] = None
+
+    @field_validator("created_at", mode="before")
+    def parse_created_at(cls, v):
+        if v is None:
+            return None
+        if hasattr(v, "isoformat"):
+            return v.isoformat()
+        if isinstance(v, (int, float)):
+            return datetime.fromtimestamp(v / 1000 if v > 1e11 else v, tz=timezone.utc).isoformat()
+        return str(v)
 
 class AnalysisReportResponse(BaseModel):
     id: str

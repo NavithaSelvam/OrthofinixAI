@@ -614,23 +614,41 @@ async def get_history(
             for record in fs_history:
                 rec_id = record.get("id") or record.get("case_id") or record.get("caseId")
                 if rec_id and rec_id not in merged_history:
-                    # Format created_at date
-                    created_str = record.get("created_at")
-                    if not created_str and record.get("createdAt"):
+                    # Format created_at date safely
+                    raw_created = record.get("created_at")
+                    if hasattr(raw_created, "isoformat"):
+                        created_str = raw_created.isoformat()
+                    elif isinstance(raw_created, (int, float)):
+                        created_str = datetime.fromtimestamp(raw_created / 1000 if raw_created > 1e11 else raw_created, tz=timezone.utc).isoformat()
+                    elif isinstance(raw_created, str) and raw_created:
+                        created_str = raw_created
+                    elif record.get("createdAt"):
                         try:
-                            created_str = datetime.fromtimestamp(record["createdAt"] / 1000, tz=timezone.utc).isoformat()
+                            ts = record["createdAt"]
+                            created_str = datetime.fromtimestamp(ts / 1000 if ts > 1e11 else ts, tz=timezone.utc).isoformat()
                         except Exception:
-                            pass
+                            created_str = datetime.now(timezone.utc).isoformat()
+                    else:
+                        created_str = datetime.now(timezone.utc).isoformat()
 
-                    f_score = float(record.get("finishing_score") or record.get("overall_finishing_score") or record.get("abo_score") or 0)
-                    c_score = float(record.get("confidence_score") or 0.95)
+                    try:
+                        f_score = float(record.get("overall_score") or record.get("overallScore") or record.get("finishing_score") or record.get("overall_finishing_score") or record.get("abo_score") or 0)
+                    except Exception:
+                        f_score = 0.0
+                    try:
+                        c_score = float(record.get("confidence_score") or record.get("confidenceScore") or 0.95)
+                    except Exception:
+                        c_score = 0.95
                     p_name = record.get("patient_name") or record.get("patientName") or (record.get("patientProfile", {}).get("name") if isinstance(record.get("patientProfile"), dict) else "Patient")
                     img_url = record.get("image_url") or record.get("imagePath") or record.get("storage_url") or ""
 
                     merged_history[rec_id] = AnalysisHistoryItem(
                         id=rec_id,
                         patient_name=p_name or "Patient",
+                        overallScore=f_score,
+                        overall_finishing_score=f_score,
                         finishing_score=f_score,
+                        confidence=c_score,
                         confidence_score=c_score,
                         created_at=created_str,
                         image_url=img_url,
