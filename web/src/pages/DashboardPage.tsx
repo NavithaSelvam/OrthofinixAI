@@ -155,11 +155,10 @@ export default function DashboardPage() {
         console.warn("Failed to subscribe to user cases subcollection:", e);
       }
 
-      // 2. Root cases query listener: cases where user_id == uid
+      // 2. Root cases collection listener
       try {
-        const qRoot = query(collection(db, 'cases'), where('user_id', '==', uid));
         const unsubRoot = onSnapshot(
-          qRoot,
+          collection(db, 'cases'),
           (snapshot) => {
             handleSnapshotChange(snapshot);
             setLoading(false);

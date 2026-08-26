@@ -12,7 +12,8 @@ import {
   limit, 
   serverTimestamp,
   updateDoc,
-  increment
+  increment,
+  writeBatch
 } from 'firebase/firestore';
 import { db, firebaseAuth } from './firebase';
 import { User as FirebaseUser } from 'firebase/auth';

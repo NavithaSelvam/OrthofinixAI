@@ -170,13 +170,7 @@ export default function PatientsPage() {
     };
 
     try {
-      const qDoctor = query(collection(db, 'patients'), where('doctor_id', '==', uid));
-      unsubs.push(onSnapshot(qDoctor, handlePatientChange, () => {}));
-    } catch {}
-
-    try {
-      const qUser = query(collection(db, 'patients'), where('user_id', '==', uid));
-      unsubs.push(onSnapshot(qUser, handlePatientChange, () => {}));
+      unsubs.push(onSnapshot(collection(db, 'patients'), handlePatientChange, () => {}));
     } catch {}
 
     if (userEmail) {
