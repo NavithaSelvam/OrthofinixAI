@@ -37,7 +37,7 @@ class CaseViewModel(application: Application) : AndroidViewModel(application) {
         emit(CaseListState.Error(e.message ?: "Failed to load cases"))
     }.stateIn(
         scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
+        started = SharingStarted.Eagerly,
         initialValue = CaseListState.Loading
     )
 

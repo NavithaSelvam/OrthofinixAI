@@ -6,10 +6,13 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface CaseDao {
-    @Query("SELECT * FROM cases WHERE userId = :userId ORDER BY createdAt DESC")
+    @Query("SELECT * FROM cases WHERE (:userId = '' OR userId = :userId OR userId = 'anonymous') ORDER BY createdAt DESC")
     fun getCasesForUser(userId: String): Flow<List<CaseEntity>>
 
-    @Query("SELECT * FROM cases WHERE userId = :userId ORDER BY createdAt DESC")
+    @Query("SELECT * FROM cases ORDER BY createdAt DESC")
+    fun getAllCasesFlow(): Flow<List<CaseEntity>>
+
+    @Query("SELECT * FROM cases WHERE (:userId = '' OR userId = :userId OR userId = 'anonymous') ORDER BY createdAt DESC")
     suspend fun getCasesForUserList(userId: String): List<CaseEntity>
 
 

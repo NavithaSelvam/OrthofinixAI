@@ -6,7 +6,7 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface PatientDao {
-    @Query("SELECT * FROM patients WHERE userId = :userId ORDER BY createdAt DESC")
+    @Query("SELECT * FROM patients WHERE (:userId = '' OR userId = :userId OR userId = 'anonymous') ORDER BY createdAt DESC")
     fun getPatientsForUser(userId: String): Flow<List<PatientEntity>>
 
     @Query("SELECT * FROM patients ORDER BY createdAt DESC")

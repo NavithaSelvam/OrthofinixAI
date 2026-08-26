@@ -194,10 +194,14 @@ class CaseRepository(private val context: Context) {
     }
 
     fun getCasesFlow(uid: String = userId()): Flow<List<SavedCase>> {
-        startRealtimeSync(uid)
-        return caseDao.getCasesForUser(uid).map { entities ->
-            entities.filter { !isCaseDeletedLocally(it.id) }.map { entity ->
-                val patientEntity = patientDao.getPatient(uid, entity.patientId) ?: patientDao.getPatientById(entity.patientId)
+        val effectiveUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: uid
+        startRealtimeSync(effectiveUid)
+        return caseDao.getAllCasesFlow().map { entities ->
+            val activeUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: effectiveUid
+            entities.filter {
+                activeUid.isEmpty() || activeUid == "anonymous" || it.userId == activeUid || it.userId.isEmpty() || it.userId == "anonymous"
+            }.map { entity ->
+                val patientEntity = patientDao.getPatient(activeUid, entity.patientId) ?: patientDao.getPatientById(entity.patientId)
                 entity.toSavedCase(patientEntity)
             }
         }.flowOn(Dispatchers.IO)

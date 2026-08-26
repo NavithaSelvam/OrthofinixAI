@@ -33,8 +33,12 @@ class PatientRepository(private val context: Context) {
     private val authRepository by lazy { AuthRepository(context) }
 
     fun getPatientsFlow(userId: String = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: AuthRepository.getCurrentUserId()): Flow<List<Patient>> {
-        return patientDao.getPatientsForUser(userId).map { entities ->
-            entities.map { it.toPatient() }
+        val effectiveUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: userId
+        return patientDao.getAllPatients().map { entities ->
+            val activeUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: effectiveUid
+            entities.filter {
+                activeUid.isEmpty() || activeUid == "anonymous" || it.userId == activeUid || it.userId.isEmpty() || it.userId == "anonymous"
+            }.map { it.toPatient() }
         }.flowOn(Dispatchers.IO)
     }
 
