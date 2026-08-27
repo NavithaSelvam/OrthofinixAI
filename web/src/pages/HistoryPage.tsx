@@ -66,12 +66,15 @@ export default function HistoryPage() {
         if (firestoreCases && Array.isArray(firestoreCases)) {
           firestoreCases.forEach((fc: any) => {
             if (fc && fc.id) {
+              const score = Math.round(Number(fc.overall_score ?? fc.overallScore ?? fc.finishing_score ?? fc.overall_finishing_score ?? 0));
+              const rawConf = Number(fc.confidence_score ?? fc.confidenceScore ?? fc.confidence ?? 0.95);
+              const confPercent = Math.round(rawConf <= 1.0 ? rawConf * 100 : rawConf);
               mergedMap.set(fc.id, {
                 id: fc.id,
                 patient_name: fc.patient_name || fc.patientName || 'Patient',
-                finishing_score: fc.finishing_score || fc.overall_finishing_score || 0,
-                overall_finishing_score: fc.overall_finishing_score || fc.finishing_score || 0,
-                confidence_score: fc.confidence_score || 0.95,
+                finishing_score: score,
+                overall_finishing_score: score,
+                confidence_score: confPercent,
                 created_at: fc.created_at || new Date().toISOString(),
                 image_url: fc.image_url || fc.imagePath || '',
                 view_type: fc.view_type || fc.viewType || 'opg',
