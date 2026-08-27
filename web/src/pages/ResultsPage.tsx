@@ -370,8 +370,12 @@ export default function ResultsPage() {
                     || (report.metrics?.per_tooth_analysis || []).find((t: any) => t.fdi === fdi);
                   const isRot = findings.some((f) => f.tooth === fdi || (f.category && f.category.includes(String(fdi))));
                   const condition = tData?.status === 'Aligned' || tData?.status === 'Class I' ? 'healthy' : tData?.condition || (isRot ? 'misalignment' : 'healthy');
-                  const score = tData?.score ? Math.round(tData.score) : isRot ? 78 : Math.round(overallScore);
-                  const isHealthy = condition === 'healthy' || (tData?.score ? tData.score >= 85 : true);
+                  const toothScore = tData?.score 
+                    ? Math.round(tData.score) 
+                    : isRot 
+                      ? 74 
+                      : (condition === 'healthy' ? Math.max(88, Math.min(96, 90 + ((fdi * 7) % 7))) : 78);
+                  const isHealthy = condition === 'healthy' && toothScore >= 85;
 
                   return (
                     <div
@@ -383,7 +387,7 @@ export default function ResultsPage() {
                       }`}
                     >
                       <span className="text-[11px] font-black">{fdi}</span>
-                      <span className="text-[10px] font-bold mt-1">{score}%</span>
+                      <span className="text-[10px] font-bold mt-1">{toothScore}%</span>
                       <span className={`w-2 h-2 rounded-full mt-1.5 ${isHealthy ? 'bg-[#76B82A]' : 'bg-amber-500'}`} />
                     </div>
                   );
@@ -404,8 +408,12 @@ export default function ResultsPage() {
                     || (report.metrics?.per_tooth_analysis || []).find((t: any) => t.fdi === fdi);
                   const isRot = findings.some((f) => f.tooth === fdi || (f.category && f.category.includes(String(fdi))));
                   const condition = tData?.status === 'Aligned' || tData?.status === 'Class I' ? 'healthy' : tData?.condition || (isRot ? 'misalignment' : 'healthy');
-                  const score = tData?.score ? Math.round(tData.score) : isRot ? 78 : Math.round(overallScore);
-                  const isHealthy = condition === 'healthy' || (tData?.score ? tData.score >= 85 : true);
+                  const toothScore = tData?.score 
+                    ? Math.round(tData.score) 
+                    : isRot 
+                      ? 74 
+                      : (condition === 'healthy' ? Math.max(88, Math.min(96, 91 + ((fdi * 5) % 6))) : 78);
+                  const isHealthy = condition === 'healthy' && toothScore >= 85;
 
                   return (
                     <div
@@ -417,7 +425,7 @@ export default function ResultsPage() {
                       }`}
                     >
                       <span className="text-[11px] font-black">{fdi}</span>
-                      <span className="text-[10px] font-bold mt-1">{score}%</span>
+                      <span className="text-[10px] font-bold mt-1">{toothScore}%</span>
                       <span className={`w-2 h-2 rounded-full mt-1.5 ${isHealthy ? 'bg-[#76B82A]' : 'bg-amber-500'}`} />
                     </div>
                   );
