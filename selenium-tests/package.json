@@ -1,0 +1,23 @@
+{
+  "name": "orthofinixai-selenium-tests",
+  "version": "1.0.0",
+  "description": "Selenium WebDriver E2E Automated Test Suite for OrthofinixAI Frontend",
+  "main": "tests/login-tests.js",
+  "scripts": {
+    "test": "node tests/login-tests.js",
+    "test:headed": "TEST_HEADLESS=false node tests/login-tests.js"
+  },
+  "dependencies": {
+    "selenium-webdriver": "^4.19.0",
+    "chromedriver": "^123.0.0"
+  },
+  "keywords": [
+    "selenium",
+    "e2e",
+    "orthofinixai",
+    "testing",
+    "webdriver"
+  ],
+  "author": "OrthofinixAI Quality Engineering",
+  "license": "ISC"
+}
