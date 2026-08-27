@@ -1,0 +1,27 @@
+{
+  "name": "orthofinixai-appium-tests",
+  "version": "1.0.0",
+  "description": "Appium Mobile WebDriver E2E Automated Test Suite for OrthofinixAI Android Native App",
+  "main": "tests/app-e2e-tests.js",
+  "scripts": {
+    "test": "node tests/app-e2e-tests.js",
+    "test:emulator": "DEVICE_NAME=emulator-5554 node tests/app-e2e-tests.js",
+    "test:device": "DEVICE_NAME=10BD6L0FMP000HQ node tests/app-e2e-tests.js"
+  },
+  "dependencies": {
+    "webdriverio": "^8.36.0",
+    "@wdio/appium-service": "^8.36.0",
+    "appium": "^2.5.1",
+    "appium-uiautomator2-driver": "^3.0.0"
+  },
+  "keywords": [
+    "appium",
+    "android",
+    "e2e",
+    "testing",
+    "orthofinixai",
+    "compose"
+  ],
+  "author": "OrthofinixAI Mobile Quality Engineering",
+  "license": "ISC"
+}
